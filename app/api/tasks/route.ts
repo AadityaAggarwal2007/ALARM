@@ -83,7 +83,13 @@ function parseBody(body: Record<string, unknown>) {
     requiredCorrect: [1, 3, 5].includes(Number(body.requiredCorrect))
       ? Number(body.requiredCorrect)
       : 3,
-    silent: body.silent === true,
+    wakeMode: ["SILENT", "VIBRATE", "SIREN", "VOICE"].includes(String(body.wakeMode))
+      ? String(body.wakeMode)
+      : "SIREN",
+    voiceText:
+      typeof body.voiceText === "string" && body.voiceText.trim()
+        ? body.voiceText.trim().slice(0, 200)
+        : null,
     vibrate: body.vibrate !== false,
   };
 }

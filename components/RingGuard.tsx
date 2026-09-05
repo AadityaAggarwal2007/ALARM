@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlarmAudio } from "@/lib/audio";
 import { AlarmVibration } from "@/lib/vibrate";
+import { AlarmSpeech, defaultPhrase } from "@/lib/speech";
 import { isCorrect, makeChallenge, type Challenge } from "@/lib/challenges";
 import { categoryMeta } from "@/lib/categories";
 import type { Task } from "@/lib/types";
@@ -35,16 +36,19 @@ export default function RingGuard() {
 
   const audioRef = useRef<AlarmAudio | null>(null);
   const vibrationRef = useRef<AlarmVibration | null>(null);
+  const speechRef = useRef<AlarmSpeech | null>(null);
   const wakeLockRef = useRef<{ release: () => Promise<void> } | null>(null);
   const taskRef = useRef<Task | null>(null);
   taskRef.current = task;
 
   const getAudio = () => (audioRef.current ??= new AlarmAudio());
   const getVibration = () => (vibrationRef.current ??= new AlarmVibration());
+  const getSpeech = () => (speechRef.current ??= new AlarmSpeech());
 
   const unlockAudio = useCallback(async () => {
     try {
       await getAudio().unlock();
+      AlarmSpeech.prime();
       setAudioReady(true);
       setArmed(true);
     } catch {
@@ -69,9 +73,24 @@ export default function RingGuard() {
     setInput("");
     setError("");
 
-    if (next.silent) void getAudio().ringSilent();
-    else void getAudio().ring();
-    if (next.vibrate) getVibration().start();
+    // The audio element must keep playing in every mode or iOS suspends the
+    // timers behind it — only SIREN actually makes it audible.
+    if (next.wakeMode === "SIREN") void getAudio().ring();
+    else void getAudio().ringSilent();
+
+    if (next.wakeMode === "VOICE") {
+      const spoken =
+        next.voiceText?.trim() ||
+        defaultPhrase(
+          next.note || next.subCategory?.name || categoryMeta(next.mainCategory).label
+        );
+      getSpeech().start(spoken);
+    }
+
+    // VIBRATE buzzes on its own; the other loud tiers buzz only if asked.
+    if (next.wakeMode === "VIBRATE" || (next.vibrate && next.wakeMode !== "SILENT")) {
+      getVibration().start();
+    }
 
     const wakeLock = (
       navigator as Navigator & {
@@ -141,6 +160,7 @@ export default function RingGuard() {
 
   const finish = useCallback(async (solved: Task, tries: number) => {
     vibrationRef.current?.stop();
+    speechRef.current?.stop();
     wakeLockRef.current?.release().catch(() => {});
     wakeLockRef.current = null;
 
@@ -186,6 +206,15 @@ export default function RingGuard() {
     }
     void finish(task, attempts);
   };
+
+  // Never leave the phone talking or buzzing behind a closed tab.
+  useEffect(
+    () => () => {
+      vibrationRef.current?.stop();
+      speechRef.current?.stop();
+    },
+    []
+  );
 
   if (!task) return null;
 

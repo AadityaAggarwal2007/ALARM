@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import "./planner.css";
+import "./timeline.css";
 import RingGuard from "@/components/RingGuard";
 import NavBar from "@/components/NavBar";
 

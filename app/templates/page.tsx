@@ -22,7 +22,8 @@ type Draft = {
   challengeType: "math" | "typing";
   difficulty: "easy" | "medium" | "hard";
   requiredCorrect: number;
-  silent: boolean;
+  wakeMode: "SILENT" | "VIBRATE" | "SIREN" | "VOICE";
+  voiceText: string;
   vibrate: boolean;
 };
 
@@ -59,7 +60,8 @@ export default function TemplatesPage() {
     challengeType: "math",
     difficulty: "easy",
     requiredCorrect: 3,
-    silent: false,
+    wakeMode: "SIREN",
+    voiceText: "",
     vibrate: true,
   });
 
@@ -79,7 +81,8 @@ export default function TemplatesPage() {
     challengeType: t.challengeType,
     difficulty: t.difficulty,
     requiredCorrect: t.requiredCorrect,
-    silent: t.silent,
+    wakeMode: t.wakeMode,
+    voiceText: t.voiceText ?? "",
     vibrate: t.vibrate,
   });
 
@@ -306,23 +309,47 @@ export default function TemplatesPage() {
               </label>
               <label className="field">
                 How it wakes you
-                <div className="segmented">
-                  <button
-                    type="button"
-                    aria-pressed={!draft.silent}
-                    onClick={() => set("silent", false)}
-                  >
-                    Siren
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={draft.silent}
-                    onClick={() => set("silent", true)}
-                  >
-                    Vibrate only
-                  </button>
+                <div className="segmented four">
+                  {(
+                    [
+                      ["SILENT", "Silent"],
+                      ["VIBRATE", "Vibrate"],
+                      ["SIREN", "Siren"],
+                      ["VOICE", "Voice"],
+                    ] as const
+                  ).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={draft.wakeMode === mode}
+                      onClick={() => set("wakeMode", mode)}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
               </label>
+              {draft.wakeMode === "VOICE" && (
+                <label className="field">
+                  What it says
+                  <input
+                    type="text"
+                    value={draft.voiceText}
+                    onChange={(e) => set("voiceText", e.target.value)}
+                    placeholder={`"${draft.note || "Wake up"}. It is time."`}
+                    maxLength={200}
+                  />
+                </label>
+              )}
+              <p className="note">
+                {draft.wakeMode === "SILENT"
+                  ? "One notification, then nothing."
+                  : draft.wakeMode === "VIBRATE"
+                    ? "Buzzes continuously until solved. No sound."
+                    : draft.wakeMode === "SIREN"
+                      ? "Loud alarm plus repeating notifications."
+                      : "Speaks it aloud plus repeating notifications."}
+              </p>
             </>
           )}
         </div>

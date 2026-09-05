@@ -98,7 +98,8 @@ export async function generateForRange(from: string, days: number): Promise<numb
           challengeType: template.challengeType,
           difficulty: template.difficulty,
           requiredCorrect: template.requiredCorrect,
-          silent: template.silent,
+          wakeMode: template.wakeMode,
+          voiceText: template.voiceText,
           vibrate: template.vibrate,
         },
       });

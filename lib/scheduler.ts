@@ -66,6 +66,9 @@ export function stopRinging(taskId: number): boolean {
 
 async function pushAll(payload: Record<string, unknown>) {
   const subs = await prisma.pushSubscription.findMany();
+  console.log(
+    `[scheduler] push "${payload.title}" repeat=${payload.repeat ?? "-"} to ${subs.length} device(s)`
+  );
   for (const sub of subs) {
     const alive = await sendPush(
       {
@@ -161,7 +164,7 @@ async function tick() {
       title: taskTitle(task),
       body: "Open the app and solve the challenge to stop it.",
       taskId: task.id,
-      silent: task.silent,
+      quiet: task.wakeMode === "SILENT" || task.wakeMode === "VIBRATE",
       repeat: 1,
     });
   }
@@ -185,13 +188,18 @@ async function tick() {
       continue;
     }
 
+    // SILENT is the nudge tier: it already sent its one notification when the
+    // block came due, and deliberately does not nag. The session stays alive
+    // so the challenge still has to be solved.
+    if (task.wakeMode === "SILENT") continue;
+
     session.lastPushAt = now;
     session.pushes += 1;
     await pushAll({
       title: taskTitle(task),
       body: "Open the app and solve the challenge to stop it.",
       taskId: id,
-      silent: task.silent,
+      quiet: task.wakeMode === "SILENT" || task.wakeMode === "VIBRATE",
       repeat: session.pushes,
     });
   }

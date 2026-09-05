@@ -6,6 +6,7 @@ import TaskEditor, {
   taskToValue,
   type EditorValue,
 } from "@/components/TaskEditor";
+import Timeline, { minutesToISO } from "@/components/Timeline";
 import { categoryMeta } from "@/lib/categories";
 import {
   addDays,
@@ -14,7 +15,6 @@ import {
   fmtDuration,
   fmtTime,
   hhmmToDate,
-  minutesOfDay,
 } from "@/lib/time";
 import type { Category, Task } from "@/lib/types";
 
@@ -104,6 +104,28 @@ export default function TodayPage() {
     setDraft(null);
     load(day);
   };
+
+  // Drag-to-move and resize on the timeline land here. The block is written
+  // optimistically so it does not snap back to its old position while the
+  // request is in flight, then reconciled from the server response.
+  const moveOrResize = useCallback(
+    async (id: number, startMin: number, endMin: number) => {
+      const startTime = minutesToISO(day, startMin);
+      const endTime = minutesToISO(day, endMin);
+
+      setTasks((list) =>
+        list.map((t) => (t.id === id ? { ...t, startTime, endTime } : t))
+      );
+
+      const res = await fetch("/api/tasks", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, startTime, endTime }),
+      });
+      if (!res.ok) load(day);
+    },
+    [day, load]
+  );
 
   const toggleComplete = async (task: Task) => {
     await fetch("/api/tasks", {
@@ -212,6 +234,7 @@ export default function TodayPage() {
           day={day}
           now={now}
           onOpen={(t) => setDraft(taskToValue(t))}
+          onCommit={moveOrResize}
         />
       )}
 
@@ -303,62 +326,3 @@ function TaskCard({
   );
 }
 
-const HOUR_PX = 56;
-
-function Timeline({
-  tasks,
-  day,
-  now,
-  onOpen,
-}: {
-  tasks: Task[];
-  day: string;
-  now: number;
-  onOpen: (t: Task) => void;
-}) {
-  const isToday = day === dateKey();
-  const nowMin = minutesOfDay(new Date(now));
-
-  return (
-    <div className="timeline" style={{ height: 24 * HOUR_PX }}>
-      {Array.from({ length: 24 }, (_, h) => (
-        <div key={h} className="tl-hour" style={{ top: h * HOUR_PX }}>
-          <span>{String(h).padStart(2, "0")}</span>
-        </div>
-      ))}
-
-      {isToday && (
-        <div className="tl-now" style={{ top: (nowMin / 60) * HOUR_PX }} />
-      )}
-
-      {tasks.map((task) => {
-        const start = new Date(task.startTime);
-        const end = new Date(task.endTime);
-        const top = (minutesOfDay(start) / 60) * HOUR_PX;
-        const mins = Math.max(
-          15,
-          (end.getTime() - start.getTime()) / 60000
-        );
-        const meta = categoryMeta(task.mainCategory);
-        return (
-          <button
-            key={task.id}
-            className="tl-block"
-            style={{
-              top,
-              height: (mins / 60) * HOUR_PX - 2,
-              background: `${meta.color}22`,
-              borderLeftColor: meta.color,
-            }}
-            onClick={() => onOpen(task)}
-          >
-            <span className="tl-label">
-              {meta.icon} {task.note || meta.label}
-            </span>
-            {task.enforce && <span className="tl-enforce">!</span>}
-          </button>
-        );
-      })}
-    </div>
-  );
-}

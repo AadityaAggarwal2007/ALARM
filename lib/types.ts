@@ -39,7 +39,8 @@ export type Task = {
   challengeType: "math" | "typing";
   difficulty: "easy" | "medium" | "hard";
   requiredCorrect: number;
-  silent: boolean;
+  wakeMode: "SILENT" | "VIBRATE" | "SIREN" | "VOICE";
+  voiceText: string | null;
   vibrate: boolean;
   ringStartedAt: string | null;
   dismissedAt: string | null;
@@ -64,7 +65,8 @@ export type Template = {
   challengeType: "math" | "typing";
   difficulty: "easy" | "medium" | "hard";
   requiredCorrect: number;
-  silent: boolean;
+  wakeMode: "SILENT" | "VIBRATE" | "SIREN" | "VOICE";
+  voiceText: string | null;
   vibrate: boolean;
   mainCategory: Category;
   subCategory: SubCategory | null;

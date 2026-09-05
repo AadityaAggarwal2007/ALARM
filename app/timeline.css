@@ -1,0 +1,75 @@
+/* Drag-to-move and resize on the timeline. */
+
+.timeline {
+  /* Stop the page from scrolling under a drag on touch. */
+  touch-action: pan-x;
+}
+
+.tl-block {
+  /* The block owns vertical gestures; the page keeps horizontal ones. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+  transition: box-shadow 0.12s ease;
+}
+
+.tl-block.active {
+  cursor: grabbing;
+  z-index: 5;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  filter: brightness(1.25);
+}
+
+/* Only suppress the transition while something is actually being dragged, so
+   the rest of the day does not animate as it re-renders each pointermove. */
+.timeline.dragging .tl-block {
+  transition: none;
+}
+
+/* The resize grip: a full-width strip along the bottom edge, tall enough to
+   hit with a thumb without swallowing the block's own drag area. */
+.tl-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 12px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.tl-handle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  width: 26px;
+  height: 3px;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  background: currentColor;
+  opacity: 0.35;
+}
+
+.tl-block:hover .tl-handle::after,
+.tl-block.active .tl-handle::after {
+  opacity: 0.8;
+}
+
+/* Live time readout while dragging, so you can see where it will land. */
+.tl-ghost {
+  position: absolute;
+  right: 6px;
+  bottom: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 6px;
+  pointer-events: none;
+  white-space: nowrap;
+}

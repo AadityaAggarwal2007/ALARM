@@ -66,7 +66,14 @@ model TimeTask {
   challengeType   String  @default("math") // math | typing
   difficulty      String  @default("easy") // easy | medium | hard
   requiredCorrect Int     @default(3)
-  silent          Boolean @default(false) // vibrate-only, no siren
+  // An escalation ladder, quietest first:
+  //   SILENT  — one notification, then nothing. A nudge.
+  //   VIBRATE — notifications repeat, so the phone buzzes continuously.
+  //   SIREN   — repeats, plus a loud two-tone alarm.
+  //   VOICE   — repeats, plus the block spoken aloud.
+  // Only SILENT sends a single push; the rest keep going until solved.
+  wakeMode        String  @default("SIREN")
+  voiceText       String?
   vibrate         Boolean @default(true)
 
   // --- The discipline record. ---
@@ -141,7 +148,8 @@ model Template {
   challengeType   String  @default("math")
   difficulty      String  @default("easy")
   requiredCorrect Int     @default(3)
-  silent          Boolean @default(false)
+  wakeMode        String  @default("SIREN")
+  voiceText       String?
   vibrate         Boolean @default(true)
 
   repeatTimes RepeatTime[]

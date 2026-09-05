@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { categoryMeta, PRIORITIES, PRIORITY_LABEL } from "@/lib/categories";
+import { speechSupported } from "@/lib/speech";
 import { dateToHHMM, fmtDuration, hhmmToDate } from "@/lib/time";
+import { vibrationSupported } from "@/lib/vibrate";
 import type { Category, Task } from "@/lib/types";
 
 export type EditorValue = {
@@ -27,7 +29,8 @@ export type EditorValue = {
   challengeType: "math" | "typing";
   difficulty: "easy" | "medium" | "hard";
   requiredCorrect: number;
-  silent: boolean;
+  wakeMode: "SILENT" | "VIBRATE" | "SIREN" | "VOICE";
+  voiceText: string;
   vibrate: boolean;
 };
 
@@ -54,7 +57,8 @@ export function taskToValue(task: Task): EditorValue {
     challengeType: task.challengeType,
     difficulty: task.difficulty,
     requiredCorrect: task.requiredCorrect,
-    silent: task.silent,
+    wakeMode: task.wakeMode,
+    voiceText: task.voiceText ?? "",
     vibrate: task.vibrate,
   };
 }
@@ -85,7 +89,8 @@ export function blankValue(date: string, categoryId: number): EditorValue {
     challengeType: "math",
     difficulty: "easy",
     requiredCorrect: 3,
-    silent: false,
+    wakeMode: "SIREN",
+    voiceText: "",
     vibrate: true,
   };
 }
@@ -377,28 +382,65 @@ export default function TaskEditor({
 
             <label className="field">
               How it wakes you
-              <div className="segmented">
-                <button
-                  type="button"
-                  aria-pressed={!value.silent}
-                  onClick={() => set("silent", false)}
-                >
-                  Siren
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={value.silent}
-                  onClick={() => set("silent", true)}
-                >
-                  Vibrate only
-                </button>
+              <div className="segmented four">
+                {(
+                  [
+                    ["SILENT", "Silent"],
+                    ["VIBRATE", "Vibrate"],
+                    ["SIREN", "Siren"],
+                    ["VOICE", "Voice"],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={value.wakeMode === mode}
+                    onClick={() => set("wakeMode", mode)}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
             </label>
+
+            {value.wakeMode === "VOICE" && (
+              <label className="field">
+                What it says
+                <input
+                  type="text"
+                  value={value.voiceText}
+                  onChange={(e) => set("voiceText", e.target.value)}
+                  placeholder={`"${value.note || "Wake up"}. It is time."`}
+                  maxLength={200}
+                />
+              </label>
+            )}
+
             <p className="note">
-              {value.silent
-                ? "Silent. Buzzes about once a second until solved. Put the phone on the silent switch so notifications vibrate instead of chiming."
-                : "Loud. Repeating chimes, plus a siren if the app is open when it fires."}
+              {value.wakeMode === "SILENT" &&
+                "One notification, then nothing. It will not nag you — but you still have to solve the challenge to clear the block."}
+              {value.wakeMode === "VIBRATE" &&
+                "Notifications repeat about once a second, so the phone buzzes continuously until solved. No sound from the app. Put the phone on the silent switch so the notifications vibrate instead of chiming."}
+              {value.wakeMode === "SIREN" &&
+                "A loud two-tone alarm, plus the repeating notifications. The siren needs the app open; the notifications are what reach you with it closed."}
+              {value.wakeMode === "VOICE" &&
+                (speechSupported()
+                  ? "Speaks the block aloud, over and over, plus the repeating notifications. Like the siren, the voice only plays while the app is open."
+                  : "This browser cannot speak, so this behaves like Vibrate.")}
             </p>
+
+            {value.wakeMode !== "SILENT" && value.wakeMode !== "VIBRATE" && (
+              <Toggle
+                label="Buzz as well"
+                note={
+                  vibrationSupported()
+                    ? "Vibrate alongside the sound."
+                    : "iOS Safari has no vibration API, so this does nothing on an iPhone — the repeating notifications are what buzz there."
+                }
+                checked={value.vibrate}
+                onChange={(v) => set("vibrate", v)}
+              />
+            )}
           </>
         )}
       </div>

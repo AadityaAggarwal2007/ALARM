@@ -823,3 +823,9 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+/* Four-way wake-mode picker: the labels need more room than three. */
+.segmented.four button {
+  padding: 11px 2px;
+  font-size: 12px;
+}
