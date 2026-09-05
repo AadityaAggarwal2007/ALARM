@@ -2,41 +2,48 @@ import { promises as fs } from "fs";
 import path from "path";
 import type { PushSubscription } from "web-push";
 
-export type Alarm = {
+export type ServerAlarm = {
   id: string;
+  time: string;
   label: string;
-  fireAt: number;
+  challengeType: "math" | "typing";
+  difficulty: "easy" | "medium" | "hard";
+  requiredCorrect: number;
+  enabled: boolean;
+  vibrate: boolean;
+  /** No siren — wake by a repeating burst of push notifications instead. */
+  silent: boolean;
+};
+
+export type PushSub = {
+  id: string;
   subscription: PushSubscription;
-  sentAt: number | null;
+  createdAt: number;
 };
 
 const DATA_DIR = process.env.ALARM_DATA_DIR || path.join(process.cwd(), "data");
-const FILE = path.join(DATA_DIR, "alarms.json");
+const ALARMS_FILE = path.join(DATA_DIR, "alarms.json");
+const SUBS_FILE = path.join(DATA_DIR, "subscriptions.json");
 
 let writeQueue: Promise<void> = Promise.resolve();
 
-async function readAll(): Promise<Alarm[]> {
+async function readFile<T>(file: string, fallback: T): Promise<T> {
   try {
-    return JSON.parse(await fs.readFile(FILE, "utf8")) as Alarm[];
+    return JSON.parse(await fs.readFile(file, "utf8")) as T;
   } catch {
-    return [];
+    return fallback;
   }
 }
 
-async function writeAll(alarms: Alarm[]): Promise<void> {
+async function writeFile(file: string, data: unknown): Promise<void> {
   await fs.mkdir(DATA_DIR, { recursive: true });
-  const tmp = `${FILE}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(alarms, null, 2));
-  await fs.rename(tmp, FILE);
+  const tmp = `${file}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(data, null, 2));
+  await fs.rename(tmp, file);
 }
 
-/** Serialize mutations so two concurrent requests cannot clobber each other. */
-function mutate<T>(fn: (alarms: Alarm[]) => [Alarm[], T]): Promise<T> {
-  const result = writeQueue.then(async () => {
-    const [next, value] = fn(await readAll());
-    await writeAll(next);
-    return value;
-  });
+function mutate<T>(fn: () => Promise<T>): Promise<T> {
+  const result = writeQueue.then(fn);
   writeQueue = result.then(
     () => undefined,
     () => undefined
@@ -44,36 +51,49 @@ function mutate<T>(fn: (alarms: Alarm[]) => [Alarm[], T]): Promise<T> {
   return result;
 }
 
-export function listAlarms(): Promise<Alarm[]> {
-  return readAll();
+// ------------------------------------------------------------------ alarms
+
+export function listAlarms(): Promise<ServerAlarm[]> {
+  return readFile<ServerAlarm[]>(ALARMS_FILE, []);
 }
 
-export function saveAlarm(alarm: Alarm): Promise<Alarm> {
-  return mutate((alarms) => [
-    [...alarms.filter((a) => a.id !== alarm.id), alarm],
-    alarm,
-  ]);
-}
-
-export function deleteAlarm(id: string): Promise<boolean> {
-  return mutate((alarms) => {
-    const next = alarms.filter((a) => a.id !== id);
-    return [next, next.length !== alarms.length];
+export function saveAlarm(alarm: ServerAlarm): Promise<ServerAlarm[]> {
+  return mutate(async () => {
+    const all = await listAlarms();
+    const idx = all.findIndex((a) => a.id === alarm.id);
+    if (idx >= 0) all[idx] = alarm;
+    else all.push(alarm);
+    all.sort((a, b) => a.time.localeCompare(b.time));
+    await writeFile(ALARMS_FILE, all);
+    return all;
   });
 }
 
-export function markSent(id: string): Promise<void> {
-  return mutate((alarms) => [
-    alarms.map((a) => (a.id === id ? { ...a, sentAt: Date.now() } : a)),
-    undefined,
-  ]);
+export function deleteAlarm(id: string): Promise<ServerAlarm[]> {
+  return mutate(async () => {
+    const all = (await listAlarms()).filter((a) => a.id !== id);
+    await writeFile(ALARMS_FILE, all);
+    return all;
+  });
 }
 
-/** Drop alarms that fired long ago so the file does not grow without bound. */
-export function pruneExpired(olderThanMs = 24 * 60 * 60 * 1000): Promise<void> {
-  const cutoff = Date.now() - olderThanMs;
-  return mutate((alarms) => [
-    alarms.filter((a) => a.sentAt === null || a.sentAt > cutoff),
-    undefined,
-  ]);
+// ---------------------------------------------------------- push subscriptions
+
+export function listSubs(): Promise<PushSub[]> {
+  return readFile<PushSub[]>(SUBS_FILE, []);
+}
+
+export function saveSub(sub: PushSub): Promise<void> {
+  return mutate(async () => {
+    const all = (await listSubs()).filter((s) => s.id !== sub.id);
+    all.push(sub);
+    await writeFile(SUBS_FILE, all);
+  });
+}
+
+export function deleteSub(id: string): Promise<void> {
+  return mutate(async () => {
+    const all = (await listSubs()).filter((s) => s.id !== id);
+    await writeFile(SUBS_FILE, all);
+  });
 }

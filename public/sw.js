@@ -12,13 +12,29 @@ self.addEventListener("push", (event) => {
   }
 
   event.waitUntil(
-    self.registration.showNotification(data.title || "Alarm", {
-      body: data.body || "Open the app to stop the alarm.",
-      tag: "alarm",
-      renotify: true,
-      requireInteraction: true,
-      data: { url: "/" },
-    })
+    (async () => {
+      // iOS only vibrates for a notification it considers NEW. Re-showing the
+      // same tag (even with renotify) can land silently, which defeats the
+      // whole point of a vibrate-only alarm — so each push gets a unique tag and
+      // the previous one is closed first, leaving a single visible card that
+      // still alerts every time.
+      const existing = await self.registration.getNotifications();
+      for (const note of existing) {
+        if (note.tag && note.tag.startsWith("alarm-")) note.close();
+      }
+
+      const repeat = typeof data.repeat === "number" ? data.repeat : 1;
+
+      await self.registration.showNotification(data.title || "Alarm", {
+        body: data.body || "Open the app to stop the alarm.",
+        tag: `alarm-${Date.now()}`,
+        renotify: true,
+        requireInteraction: true,
+        // Honoured on Android; ignored on iOS, which uses system settings.
+        vibrate: [500, 250, 500, 250, 500, 700],
+        data: { url: "/?ring=1", alarmId: data.alarmId || null, repeat },
+      });
+    })()
   );
 });
 

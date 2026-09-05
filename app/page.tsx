@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlarmAudio } from "@/lib/audio";
+import { AlarmVibration } from "@/lib/vibrate";
 import {
   isCorrect,
   makeChallenge,
@@ -10,24 +11,30 @@ import {
   type Difficulty,
 } from "@/lib/challenges";
 
-type Phase = "idle" | "armed" | "ringing" | "done";
-
-type Persisted = {
-  targetTs: number;
+type ServerAlarm = {
+  id: string;
+  time: string;
+  label: string;
   challengeType: ChallengeType;
   difficulty: Difficulty;
   requiredCorrect: number;
-  label: string;
-  alarmId: string | null;
+  enabled: boolean;
+  vibrate: boolean;
+  silent: boolean;
 };
 
-const STORAGE_KEY = "alarm.state.v1";
+type ClientAlarm = ServerAlarm & {
+  fireAt: number;
+};
 
-function nextOccurrence(hhmm: string): number {
+const MAX_LATE_MS = 5 * 60 * 1000;
+const SUB_ID_KEY = "alarm.pushSubId";
+
+function nextOccurrence(hhmm: string, after = Date.now()): number {
   const [hours, minutes] = hhmm.split(":").map(Number);
-  const target = new Date();
+  const target = new Date(after);
   target.setHours(hours, minutes, 0, 0);
-  if (target.getTime() <= Date.now()) target.setDate(target.getDate() + 1);
+  if (target.getTime() <= after) target.setDate(target.getDate() + 1);
   return target.getTime();
 }
 
@@ -47,6 +54,19 @@ function formatClock(ts: number): string {
   });
 }
 
+function formatTimeLabel(hhmm: string): string {
+  const [hours, minutes] = hhmm.split(":").map(Number);
+  const d = new Date();
+  d.setHours(hours, minutes, 0, 0);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function newId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `a${Date.now()}${Math.random().toString(16).slice(2)}`;
+}
+
 function urlBase64ToUint8Array(base64: string): Uint8Array {
   const padded = (base64 + "=".repeat((4 - (base64.length % 4)) % 4))
     .replace(/-/g, "+")
@@ -55,43 +75,87 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
   return Uint8Array.from(raw, (char) => char.charCodeAt(0));
 }
 
+function enrich(server: ServerAlarm[]): ClientAlarm[] {
+  const now = Date.now();
+  return server
+    .map((a) => ({
+      ...a,
+      fireAt: a.enabled ? nextOccurrence(a.time) : nextOccurrence(a.time, now),
+    }))
+    .sort((a, b) => a.time.localeCompare(b.time));
+}
+
+type Draft = {
+  id: string | null;
+  time: string;
+  label: string;
+  challengeType: ChallengeType;
+  difficulty: Difficulty;
+  requiredCorrect: number;
+  vibrate: boolean;
+  silent: boolean;
+};
+
+const blankDraft = (): Draft => ({
+  id: null,
+  time: "07:00",
+  label: "",
+  challengeType: "math",
+  difficulty: "easy",
+  requiredCorrect: 3,
+  vibrate: true,
+  silent: false,
+});
+
 export default function Page() {
-  const [phase, setPhase] = useState<Phase>("idle");
+  const [alarms, setAlarms] = useState<ClientAlarm[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
-  const [timeValue, setTimeValue] = useState("07:00");
-  const [label, setLabel] = useState("");
-  const [challengeType, setChallengeType] = useState<ChallengeType>("math");
-  const [difficulty, setDifficulty] = useState<Difficulty>("medium");
-  const [requiredCorrect, setRequiredCorrect] = useState(3);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [ringingId, setRingingId] = useState<string | null>(null);
 
-  const [targetTs, setTargetTs] = useState(0);
   const [challenge, setChallenge] = useState<Challenge | null>(null);
   const [input, setInput] = useState("");
   const [streak, setStreak] = useState(0);
   const [error, setError] = useState("");
   const [shake, setShake] = useState(false);
+  const [dismissedAt, setDismissedAt] = useState(0);
 
   const [audioReady, setAudioReady] = useState(false);
   const [pushNote, setPushNote] = useState("");
-  const [dismissedAt, setDismissedAt] = useState(0);
 
   const audioRef = useRef<AlarmAudio | null>(null);
+  const vibrationRef = useRef<AlarmVibration | null>(null);
   const wakeLockRef = useRef<{ release: () => Promise<void> } | null>(null);
   const vapidRef = useRef<string | null>(null);
-  const alarmIdRef = useRef<string | null>(null);
-  const settingsRef = useRef({ challengeType, difficulty, requiredCorrect });
+  const alarmsRef = useRef<ClientAlarm[]>([]);
 
-  settingsRef.current = { challengeType, difficulty, requiredCorrect };
+  alarmsRef.current = alarms;
+
+  const ringing = alarms.find((a) => a.id === ringingId) ?? null;
+  const enabled = useMemo(() => alarms.filter((a) => a.enabled), [alarms]);
+  const nextUp = useMemo(
+    () =>
+      enabled.length
+        ? enabled.reduce((a, b) => (a.fireAt <= b.fireAt ? a : b))
+        : null,
+    [enabled]
+  );
 
   const getAudio = () => {
     if (!audioRef.current) audioRef.current = new AlarmAudio();
     return audioRef.current;
   };
 
-  const persist = useCallback((state: Persisted | null) => {
-    if (state) localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    else localStorage.removeItem(STORAGE_KEY);
+  const getVibration = () => {
+    if (!vibrationRef.current) vibrationRef.current = new AlarmVibration();
+    return vibrationRef.current;
+  };
+
+  const stopVibration = useCallback(() => {
+    vibrationRef.current?.stop();
   }, []);
 
   const releaseWakeLock = useCallback(() => {
@@ -100,65 +164,53 @@ export default function Page() {
   }, []);
 
   const requestWakeLock = useCallback(async () => {
-    const wakeLock = (navigator as Navigator & { wakeLock?: { request: (t: string) => Promise<{ release: () => Promise<void> }> } }).wakeLock;
+    const wakeLock = (
+      navigator as Navigator & {
+        wakeLock?: {
+          request: (t: string) => Promise<{ release: () => Promise<void> }>;
+        };
+      }
+    ).wakeLock;
     if (!wakeLock) return;
     try {
       wakeLockRef.current = await wakeLock.request("screen");
-    } catch {
-      // Denied on low battery, or unsupported. The alarm still sounds.
-    }
+    } catch {}
   }, []);
 
-  const startRinging = useCallback(() => {
-    const { challengeType: type, difficulty: level } = settingsRef.current;
-    setPhase("ringing");
-    setChallenge(makeChallenge(type, level));
-    setStreak(0);
-    setInput("");
-    setError("");
-    void requestWakeLock();
-    void getAudio().ring();
-  }, [requestWakeLock]);
+  // ----------------------------------------------------------------- sync
 
-  // Rehydrate a running alarm across reloads and app restarts.
+  const api = useCallback(
+    async (
+      method: string,
+      path: string,
+      body?: Record<string, unknown>
+    ): Promise<Response> => {
+      const opts: RequestInit = {
+        method,
+        headers: { "Content-Type": "application/json" },
+      };
+      if (body) opts.body = JSON.stringify(body);
+      const res = await fetch(path, opts);
+      if (res.status === 401) window.location.reload();
+      return res;
+    },
+    []
+  );
+
+  const fetchAlarms = useCallback(async () => {
+    const res = await api("GET", "/api/alarms");
+    if (res.ok) {
+      const data = (await res.json()) as ServerAlarm[];
+      setAlarms(enrich(data));
+    }
+    setLoaded(true);
+  }, [api]);
+
   useEffect(() => {
-    let saved: Persisted | null = null;
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      saved = raw ? (JSON.parse(raw) as Persisted) : null;
-    } catch {
-      saved = null;
-    }
-    if (!saved) return;
+    fetchAlarms();
+  }, [fetchAlarms]);
 
-    setTargetTs(saved.targetTs);
-    setChallengeType(saved.challengeType);
-    setDifficulty(saved.difficulty);
-    setRequiredCorrect(saved.requiredCorrect);
-    setLabel(saved.label);
-    setTimeValue(
-      new Date(saved.targetTs).toTimeString().slice(0, 5)
-    );
-    alarmIdRef.current = saved.alarmId;
-    settingsRef.current = {
-      challengeType: saved.challengeType,
-      difficulty: saved.difficulty,
-      requiredCorrect: saved.requiredCorrect,
-    };
-
-    const overdue =
-      Date.now() >= saved.targetTs ||
-      new URLSearchParams(window.location.search).get("ring") === "1";
-
-    if (overdue) {
-      setPhase("ringing");
-      setChallenge(
-        makeChallenge(saved.challengeType, saved.difficulty)
-      );
-    } else {
-      setPhase("armed");
-    }
-  }, []);
+  // ------------------------------------------------------------------ push
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
@@ -171,26 +223,84 @@ export default function Page() {
       .catch(() => {});
   }, []);
 
-  // Single clock drives both the countdown and the fire check.
-  useEffect(() => {
-    if (phase !== "armed" && phase !== "ringing") return;
-    const tick = () => {
-      setNow(Date.now());
-      if (phase === "armed" && targetTs && Date.now() >= targetTs) {
-        startRinging();
-      }
-    };
-    const id = setInterval(tick, 500);
-    document.addEventListener("visibilitychange", tick);
-    return () => {
-      clearInterval(id);
-      document.removeEventListener("visibilitychange", tick);
-    };
-  }, [phase, targetTs, startRinging]);
+  const registerPush = useCallback(async () => {
+    if (
+      !("Notification" in window) ||
+      !("serviceWorker" in navigator) ||
+      !vapidRef.current
+    ) {
+      setPushNote("Push not available on this browser.");
+      return;
+    }
 
-  // A reload drops audio permission; the next tap anywhere restores it.
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      setPushNote("Notifications denied — no backup if you close the app.");
+      return;
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    const subscription =
+      (await registration.pushManager.getSubscription()) ??
+      (await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidRef.current),
+      }));
+
+    let subId = "";
+    try {
+      subId = localStorage.getItem(SUB_ID_KEY) || "";
+    } catch {}
+
+    const res = await api("POST", "/api/subscribe", {
+      id: subId || undefined,
+      subscription,
+    });
+
+    if (res.ok) {
+      const data = (await res.json()) as { id: string };
+      try {
+        localStorage.setItem(SUB_ID_KEY, data.id);
+      } catch {}
+      setPushNote("Notifications enabled.");
+    } else {
+      setPushNote("Could not register push.");
+    }
+  }, [api]);
+
   useEffect(() => {
-    if (phase !== "ringing" || audioReady) return;
+    if (!loaded) return;
+    if (enabled.length > 0) registerPush();
+  }, [loaded, enabled.length > 0, registerPush]);
+
+  // ----------------------------------------------------------------- audio
+
+  const unlockAudio = useCallback(() => {
+    getAudio()
+      .unlock()
+      .then(() => setAudioReady(true))
+      .catch(() =>
+        setPushNote("Could not start background audio — tap the toggle again.")
+      );
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    if (enabled.length === 0 && !ringingId) {
+      stopVibration();
+      if (audioRef.current) {
+        audioRef.current.stop();
+        audioRef.current = null;
+        setAudioReady(false);
+      }
+    }
+  }, [enabled.length, ringingId, loaded, stopVibration]);
+
+  // Never leave the phone buzzing behind a closed tab.
+  useEffect(() => stopVibration, [stopVibration]);
+
+  useEffect(() => {
+    if (!ringingId || audioReady) return;
     const restore = async () => {
       await getAudio().unlock().catch(() => {});
       setAudioReady(true);
@@ -198,118 +308,132 @@ export default function Page() {
     };
     document.addEventListener("pointerdown", restore, { once: true });
     return () => document.removeEventListener("pointerdown", restore);
-  }, [phase, audioReady]);
+  }, [ringingId, audioReady]);
+
+  // ------------------------------------------------------------- the clock
+
+  const startRinging = useCallback(
+    (alarm: ClientAlarm) => {
+      setRingingId(alarm.id);
+      setChallenge(makeChallenge(alarm.challengeType, alarm.difficulty));
+      setStreak(0);
+      setInput("");
+      setError("");
+      setDraft(null);
+      void requestWakeLock();
+      // A silent alarm must not make a sound, but the audio element still has
+      // to keep playing or iOS freezes the timers behind it.
+      if (alarm.silent) void getAudio().ringSilent();
+      else void getAudio().ring();
+      if (alarm.vibrate) getVibration().start();
+    },
+    [requestWakeLock]
+  );
 
   useEffect(() => {
-    if (phase !== "armed" && phase !== "ringing") return;
+    if (!loaded) return;
+    if (enabled.length === 0 && !ringingId) return;
+
+    const tick = () => {
+      const t = Date.now();
+      setNow(t);
+      if (ringingId) return;
+      const due = alarmsRef.current.find(
+        (a) => a.enabled && a.fireAt <= t && t - a.fireAt <= MAX_LATE_MS
+      );
+      if (due) startRinging(due);
+    };
+
+    const id = setInterval(tick, 500);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [loaded, enabled.length, ringingId, startRinging]);
+
+  useEffect(() => {
+    if (enabled.length === 0 && !ringingId) return;
     const warn = (event: BeforeUnloadEvent) => event.preventDefault();
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [phase]);
+  }, [enabled.length, ringingId]);
 
-  const scheduleServerPush = useCallback(
-    async (fireAt: number, alarmLabel: string) => {
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") {
-        setPushNote(
-          "Notifications are off, so there is no backup if you close the app."
-        );
-        return;
-      }
-      if (!vapidRef.current) {
-        setPushNote("Server push is not configured — foreground alarm only.");
-        return;
-      }
+  // Re-derive fireAt every minute for the countdown display.
+  useEffect(() => {
+    if (!loaded || alarms.length === 0) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [loaded, alarms.length]);
 
-      const registration = await navigator.serviceWorker.ready;
-      const subscription =
-        (await registration.pushManager.getSubscription()) ??
-        (await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(vapidRef.current),
-        }));
+  // ------------------------------------------------------------- mutations
 
-      const response = await fetch("/api/alarms", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fireAt, label: alarmLabel, subscription }),
-      });
-      if (!response.ok) throw new Error(await response.text());
+  const saveDraft = async () => {
+    if (!draft) return;
+    const label = draft.label.trim();
 
-      const { id } = (await response.json()) as { id: string };
-      alarmIdRef.current = id;
-      setPushNote("Backup notification scheduled.");
+    unlockAudio();
+    setSyncing(true);
 
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const state = JSON.parse(raw) as Persisted;
-        persist({ ...state, alarmId: id });
-      }
-    },
-    [persist]
-  );
+    const body: Record<string, unknown> = {
+      id: draft.id ?? newId(),
+      time: draft.time,
+      label,
+      challengeType: draft.challengeType,
+      difficulty: draft.difficulty,
+      requiredCorrect: draft.requiredCorrect,
+      vibrate: draft.vibrate,
+      silent: draft.silent,
+      enabled: true,
+    };
 
-  const arm = () => {
-    const fireAt = nextOccurrence(timeValue);
-    const trimmed = label.trim() || "Alarm";
-
-    // play() must be initiated inside this gesture or iOS blocks it forever.
-    getAudio()
-      .unlock()
-      .then(() => setAudioReady(true))
-      .catch(() =>
-        setPushNote("Could not start background audio — tap Set Alarm again.")
-      );
-
-    setTargetTs(fireAt);
-    setPhase("armed");
+    const res = await api("POST", "/api/alarms", body);
+    if (res.ok) {
+      const data = (await res.json()) as ServerAlarm[];
+      setAlarms(enrich(data));
+    }
+    setSyncing(false);
+    setDraft(null);
     setPushNote("");
-    persist({
-      targetTs: fireAt,
-      challengeType,
-      difficulty,
-      requiredCorrect,
-      label: trimmed,
-      alarmId: null,
-    });
+  };
 
-    if ("Notification" in window && "serviceWorker" in navigator) {
-      scheduleServerPush(fireAt, trimmed).catch(() =>
-        setPushNote("Could not schedule the backup notification.")
-      );
+  const toggleAlarm = async (id: string) => {
+    const current = alarms.find((a) => a.id === id);
+    if (!current) return;
+    const turningOn = !current.enabled;
+
+    if (turningOn) unlockAudio();
+
+    const body: Record<string, unknown> = {
+      ...current,
+      enabled: turningOn,
+    };
+    delete (body as Record<string, unknown>).fireAt;
+
+    const res = await api("POST", "/api/alarms", body);
+    if (res.ok) {
+      const data = (await res.json()) as ServerAlarm[];
+      setAlarms(enrich(data));
     }
   };
 
-  const cancelServerPush = useCallback(async () => {
-    const id = alarmIdRef.current;
-    alarmIdRef.current = null;
-    if (!id) return;
-    await fetch(`/api/alarms?id=${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    }).catch(() => {});
-  }, []);
-
-  const disarm = () => {
-    getAudio().stop();
-    releaseWakeLock();
-    setAudioReady(false);
-    setPhase("idle");
-    setPushNote("");
-    persist(null);
-    void cancelServerPush();
+  const removeAlarm = async (id: string) => {
+    const res = await api("DELETE", `/api/alarms?id=${encodeURIComponent(id)}`);
+    if (res.ok) {
+      const data = (await res.json()) as ServerAlarm[];
+      setAlarms(enrich(data));
+    }
   };
 
   const submitAnswer = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!challenge) return;
-
-    const { challengeType: type, difficulty: level } = settingsRef.current;
+    if (!challenge || !ringing) return;
 
     if (!isCorrect(challenge, input)) {
       setStreak(0);
       setInput("");
       setError("Wrong — streak reset. Here is a new one.");
-      setChallenge(makeChallenge(type, level));
+      setChallenge(makeChallenge(ringing.challengeType, ringing.difficulty));
       setShake(true);
       setTimeout(() => setShake(false), 400);
       return;
@@ -319,26 +443,57 @@ export default function Page() {
     setInput("");
     setError("");
 
-    if (solved >= requiredCorrect) {
-      getAudio().stop();
-      releaseWakeLock();
-      setAudioReady(false);
-      setDismissedAt(Date.now());
-      setPhase("done");
-      setChallenge(null);
-      persist(null);
-      void cancelServerPush();
+    if (solved < ringing.requiredCorrect) {
+      setStreak(solved);
+      setChallenge(makeChallenge(ringing.challengeType, ringing.difficulty));
       return;
     }
 
-    setStreak(solved);
-    setChallenge(makeChallenge(type, level));
+    releaseWakeLock();
+    stopVibration();
+    // Stop the server's repeating buzz for this alarm.
+    void api("POST", "/api/dismiss", { alarmId: ringing.id });
+    setDismissedAt(Date.now());
+    setRingingId(null);
+    setChallenge(null);
+
+    // The alarm that just rang stays enabled and rolls to tomorrow, so the
+    // keep-alive track has to carry on — dropping it here would freeze the
+    // timer every alarm depends on. Only a list with nothing left armed
+    // releases the audio element.
+    const stillArmed = alarms.some((a) => a.enabled);
+    if (stillArmed) {
+      void getAudio().backToKeepAlive();
+    } else {
+      getAudio().stop();
+      audioRef.current = null;
+      setAudioReady(false);
+    }
+
+    // Re-derive fireAt for the dismissed alarm (rolls to tomorrow).
+    setAlarms((list) =>
+      list.map((a) =>
+        a.id === ringing.id
+          ? { ...a, fireAt: nextOccurrence(a.time, Date.now() + 1000) }
+          : a
+      )
+    );
   };
 
-  if (phase === "ringing") {
+  // ------------------------------------------------------------------ view
+
+  if (!loaded) {
+    return (
+      <main className="shell" style={{ justifyContent: "center" }}>
+        <p className="sub" style={{ textAlign: "center" }}>Loading...</p>
+      </main>
+    );
+  }
+
+  if (ringing) {
     return (
       <div className="ringing">
-        <h2>Wake up</h2>
+        <h2>{ringing.label || "Wake up"}</h2>
         {!audioReady && (
           <p className="error">Tap anywhere to restore the alarm sound.</p>
         )}
@@ -347,24 +502,24 @@ export default function Page() {
           onSubmit={submitAnswer}
         >
           <div className="progress">
-            {Array.from({ length: requiredCorrect }, (_, i) => (
+            {Array.from({ length: ringing.requiredCorrect }, (_, i) => (
               <span key={i} className={i < streak ? "done" : ""} />
             ))}
           </div>
 
-          {challenge && challengeType === "math" ? (
+          {challenge && ringing.challengeType === "math" ? (
             <p className="prompt-math">{challenge.prompt} = ?</p>
           ) : (
             <p className="prompt-typing">{challenge?.prompt}</p>
           )}
 
           <input
-            type={challengeType === "math" ? "number" : "text"}
-            inputMode={challengeType === "math" ? "numeric" : "text"}
+            type={ringing.challengeType === "math" ? "number" : "text"}
+            inputMode={ringing.challengeType === "math" ? "numeric" : "text"}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={
-              challengeType === "math" ? "Answer" : "Type it exactly"
+              ringing.challengeType === "math" ? "Answer" : "Type it exactly"
             }
             autoComplete="off"
             autoCorrect="off"
@@ -380,76 +535,145 @@ export default function Page() {
           </button>
         </form>
         <p className="note">
-          {requiredCorrect} correct in a row stops the alarm. A wrong answer
-          resets the streak.
+          {ringing.requiredCorrect} correct in a row stops the alarm. A wrong
+          answer resets the streak.
         </p>
       </div>
     );
   }
 
-  if (phase === "done") {
+  if (draft) {
+    const isNew = !draft.id;
     return (
       <main className="shell">
         <div>
-          <h1>Good morning</h1>
-          <p className="sub">Alarm cleared. You solved your way out.</p>
-        </div>
-        <div className="card">
-          <p className="done-time">{formatClock(dismissedAt)}</p>
-          <button className="primary" onClick={() => setPhase("idle")}>
-            Set another alarm
-          </button>
-        </div>
-      </main>
-    );
-  }
-
-  if (phase === "armed") {
-    return (
-      <main className="shell">
-        <div>
-          <h1>Alarm armed</h1>
+          <h1>{isNew ? "New alarm" : "Edit alarm"}</h1>
           <p className="sub">
-            Keep this tab open. You can lock the phone or switch apps — the
-            background audio keeps the timer alive.
+            {formatGap(nextOccurrence(draft.time) - now)} from now.
           </p>
         </div>
 
         <div className="card">
-          <p className="countdown">{formatGap(targetTs - now)}</p>
-          <p className="target">
-            Rings at {formatClock(targetTs)} · {label.trim() || "Alarm"}
-          </p>
-          <span className="pill">
-            <span className={`dot${audioReady ? "" : " warn"}`} />
-            {audioReady ? "Background audio running" : "Audio not running"}
-          </span>
-          {!audioReady && (
-            <button
-              className="ghost"
-              onClick={() =>
-                getAudio()
-                  .unlock()
-                  .then(() => setAudioReady(true))
-                  .catch(() => {})
-              }
-            >
-              Restore background audio
-            </button>
-          )}
+          <label className="field">
+            Ring at
+            <input
+              type="time"
+              value={draft.time}
+              onChange={(e) => setDraft({ ...draft, time: e.target.value })}
+            />
+          </label>
+          <label className="field">
+            Label
+            <input
+              type="text"
+              value={draft.label}
+              onChange={(e) => setDraft({ ...draft, label: e.target.value })}
+              placeholder="Wake up"
+              maxLength={60}
+            />
+          </label>
         </div>
 
         <div className="card">
+          <label className="field">
+            Challenge
+            <div className="segmented">
+              {(["math", "typing"] as const).map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  aria-pressed={draft.challengeType === type}
+                  onClick={() => setDraft({ ...draft, challengeType: type })}
+                >
+                  {type === "math" ? "Math" : "Typing"}
+                </button>
+              ))}
+            </div>
+          </label>
+
+          <label className="field">
+            Difficulty
+            <div className="segmented">
+              {(["easy", "medium", "hard"] as const).map((level) => (
+                <button
+                  key={level}
+                  type="button"
+                  aria-pressed={draft.difficulty === level}
+                  onClick={() => setDraft({ ...draft, difficulty: level })}
+                >
+                  {level[0].toUpperCase() + level.slice(1)}
+                </button>
+              ))}
+            </div>
+          </label>
+
+          <label className="field">
+            How many in a row
+            <div className="segmented">
+              {[1, 3, 5].map((count) => (
+                <button
+                  key={count}
+                  type="button"
+                  aria-pressed={draft.requiredCorrect === count}
+                  onClick={() =>
+                    setDraft({ ...draft, requiredCorrect: count })
+                  }
+                >
+                  {count}
+                </button>
+              ))}
+            </div>
+          </label>
+        </div>
+
+        <div className="card">
+          <label className="field">
+            How it wakes you
+            <div className="segmented">
+              <button
+                type="button"
+                aria-pressed={!draft.silent}
+                onClick={() => setDraft({ ...draft, silent: false })}
+              >
+                Siren
+              </button>
+              <button
+                type="button"
+                aria-pressed={draft.silent}
+                onClick={() => setDraft({ ...draft, silent: true })}
+              >
+                Vibrate only
+              </button>
+            </div>
+          </label>
           <p className="note">
-            To stop it you will solve {requiredCorrect}{" "}
-            {difficulty} {challengeType === "math" ? "math problems" : "typing tests"}{" "}
-            in a row.
+            {draft.silent
+              ? "No sound. Your phone buzzes every 5 seconds via notifications until you solve the challenge. Put the phone on the silent switch so it vibrates instead of chiming — and keep the app on your Home Screen, or iOS will not deliver the push."
+              : "Plays a loud two-tone siren through the phone speaker."}
           </p>
-          {pushNote && <p className="note">{pushNote}</p>}
-          <button className="ghost" onClick={disarm}>
-            Cancel alarm
-          </button>
         </div>
+
+        <button
+          className="primary"
+          onClick={saveDraft}
+          disabled={syncing}
+        >
+          {syncing ? "Saving..." : isNew ? "Add alarm" : "Save changes"}
+        </button>
+        <button className="ghost" onClick={() => setDraft(null)}>
+          Cancel
+        </button>
+        {!isNew && (
+          <button
+            className="ghost danger"
+            onClick={() => {
+              removeAlarm(draft.id as string);
+              setDraft(null);
+            }}
+          >
+            Delete alarm
+          </button>
+        )}
       </main>
     );
   }
@@ -457,90 +681,88 @@ export default function Page() {
   return (
     <main className="shell">
       <div>
-        <h1>Alarm</h1>
+        <h1>Alarms</h1>
         <p className="sub">
-          An alarm you have to earn your way out of. Add this to your Home
-          Screen so the backup notification works.
+          {nextUp
+            ? `Next in ${formatGap(nextUp.fireAt - now)} — keep this tab open.`
+            : "An alarm you have to earn your way out of."}
         </p>
       </div>
 
-      <div className="card">
-        <label className="field">
-          Ring at
-          <input
-            type="time"
-            value={timeValue}
-            onChange={(e) => setTimeValue(e.target.value)}
-          />
-        </label>
-        <p className="target">
-          {formatGap(nextOccurrence(timeValue) - now)} from now
-        </p>
-        <label className="field">
-          Label
-          <input
-            type="text"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder="Wake up"
-            maxLength={60}
-          />
-        </label>
-      </div>
+      {alarms.length === 0 && (
+        <div className="card">
+          <p className="note">No alarms yet.</p>
+        </div>
+      )}
 
-      <div className="card">
-        <label className="field">
-          Challenge
-          <div className="segmented">
-            {(["math", "typing"] as const).map((type) => (
-              <button
-                key={type}
-                type="button"
-                aria-pressed={challengeType === type}
-                onClick={() => setChallengeType(type)}
-              >
-                {type === "math" ? "Math" : "Typing"}
-              </button>
-            ))}
-          </div>
-        </label>
+      {alarms.map((alarm) => (
+        <div
+          key={alarm.id}
+          className={`alarm-row${alarm.enabled ? "" : " off"}`}
+        >
+          <button
+            className="alarm-open"
+            onClick={() =>
+              setDraft({
+                id: alarm.id,
+                time: alarm.time,
+                label: alarm.label,
+                challengeType: alarm.challengeType,
+                difficulty: alarm.difficulty,
+                requiredCorrect: alarm.requiredCorrect,
+                vibrate: alarm.vibrate,
+                silent: alarm.silent,
+              })
+            }
+          >
+            <span className="alarm-time">{formatTimeLabel(alarm.time)}</span>
+            <span className="alarm-meta">
+              {alarm.label || "Alarm"} · {alarm.requiredCorrect}{" "}
+              {alarm.difficulty}{" "}
+              {alarm.challengeType === "math" ? "math" : "typing"}
+              {alarm.silent ? " · vibrate only" : " · siren"}
+              {alarm.enabled
+                ? ` · in ${formatGap(alarm.fireAt - now)}`
+                : " · off"}
+            </span>
+          </button>
 
-        <label className="field">
-          Difficulty
-          <div className="segmented">
-            {(["easy", "medium", "hard"] as const).map((level) => (
-              <button
-                key={level}
-                type="button"
-                aria-pressed={difficulty === level}
-                onClick={() => setDifficulty(level)}
-              >
-                {level[0].toUpperCase() + level.slice(1)}
-              </button>
-            ))}
-          </div>
-        </label>
+          <label className="switch">
+            <input
+              type="checkbox"
+              checked={alarm.enabled}
+              onChange={() => toggleAlarm(alarm.id)}
+              aria-label={`${alarm.enabled ? "Turn off" : "Turn on"} the ${formatTimeLabel(alarm.time)} alarm`}
+            />
+            <span className="track" />
+          </label>
+        </div>
+      ))}
 
-        <label className="field">
-          How many in a row
-          <div className="segmented">
-            {[1, 3, 5].map((count) => (
-              <button
-                key={count}
-                type="button"
-                aria-pressed={requiredCorrect === count}
-                onClick={() => setRequiredCorrect(count)}
-              >
-                {count}
-              </button>
-            ))}
-          </div>
-        </label>
-      </div>
-
-      <button className="primary" onClick={arm}>
-        Set alarm
+      <button className="primary" onClick={() => setDraft(blankDraft())}>
+        Add alarm
       </button>
+
+      {enabled.length > 0 && (
+        <div className="card">
+          <span className="pill">
+            <span className={`dot${audioReady ? "" : " warn"}`} />
+            {audioReady ? "Background audio running" : "Audio not running"}
+          </span>
+          {!audioReady && (
+            <button className="ghost" onClick={unlockAudio}>
+              Restore background audio
+            </button>
+          )}
+          {pushNote && <p className="note">{pushNote}</p>}
+        </div>
+      )}
+
+      {dismissedAt > 0 && (
+        <p className="note">
+          Last alarm cleared at {formatClock(dismissedAt)}.
+        </p>
+      )}
     </main>
   );
 }

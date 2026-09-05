@@ -15,49 +15,61 @@ const pick = <T,>(items: readonly T[]) => items[rand(0, items.length - 1)];
 
 const PHRASES: Record<Difficulty, readonly string[]> = {
   easy: [
-    "wake up now",
+    "wake up",
+    "get up",
+    "sun up",
+    "no sleep",
+    "move now",
+    "stand up",
+    "rise up",
+    "lets go",
+  ],
+  medium: [
     "get out of bed",
     "the sun is up",
     "no more sleep",
     "start the day",
+    "time to wake",
   ],
-  medium: [
+  hard: [
     "I am awake and I am getting up right now",
     "sleeping in is not part of the plan today",
     "the alarm has won and I accept my defeat",
     "put the phone down and stand up immediately",
   ],
-  hard: [
-    "I, the undersigned, hereby confirm that I am fully awake; no snoozing.",
-    "Discipline equals freedom — and freedom starts at 6:00 a.m., not 6:45.",
-    "Rise: the day will not wait, the work will not do itself, so move!",
-  ],
 };
 
 function mathChallenge(difficulty: Difficulty): Challenge {
   if (difficulty === "easy") {
-    const a = rand(10, 49);
-    const b = rand(10, 49);
+    const a = rand(2, 20);
+    const b = rand(2, 20);
+    const sub = Math.random() < 0.5;
+    if (sub) {
+      const big = Math.max(a, b);
+      const small = Math.min(a, b);
+      return { prompt: `${big} − ${small}`, answer: String(big - small), exact: true };
+    }
     return { prompt: `${a} + ${b}`, answer: String(a + b), exact: true };
   }
 
   if (difficulty === "medium") {
-    const a = rand(12, 29);
-    const b = rand(3, 9);
-    const c = rand(10, 60);
-    return {
-      prompt: `${a} × ${b} + ${c}`,
-      answer: String(a * b + c),
-      exact: true,
-    };
+    const a = rand(10, 49);
+    const b = rand(10, 49);
+    const sub = Math.random() < 0.5;
+    if (sub) {
+      const big = Math.max(a, b);
+      const small = Math.min(a, b);
+      return { prompt: `${big} − ${small}`, answer: String(big - small), exact: true };
+    }
+    return { prompt: `${a} + ${b}`, answer: String(a + b), exact: true };
   }
 
-  const a = rand(13, 39);
-  const b = rand(12, 29);
-  const c = rand(50, 200);
+  const a = rand(12, 29);
+  const b = rand(3, 9);
+  const c = rand(10, 60);
   return {
-    prompt: `${a} × ${b} − ${c}`,
-    answer: String(a * b - c),
+    prompt: `${a} × ${b} + ${c}`,
+    answer: String(a * b + c),
     exact: true,
   };
 }

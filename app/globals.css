@@ -335,3 +335,130 @@ button.ghost {
   font-variant-numeric: tabular-nums;
   margin: 0;
 }
+
+/* --- alarm list ------------------------------------------------------- */
+
+.alarm-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.alarm-row.off {
+  opacity: 0.55;
+}
+
+.alarm-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.alarm-time {
+  font-size: 34px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.alarm-meta {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* Toggle switch. The checkbox stays in the DOM for keyboard and screen
+   readers; only the track and knob are painted. */
+.switch {
+  flex: none;
+  position: relative;
+  width: 52px;
+  height: 32px;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.switch .track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  transition: background 0.18s ease, border-color 0.18s ease;
+  pointer-events: none;
+}
+
+.switch .track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+
+.switch input:checked + .track {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.switch input:checked + .track::after {
+  background: var(--accent);
+  transform: translateX(20px);
+}
+
+.switch input:focus-visible + .track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button.ghost.danger {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch .track,
+  .switch .track::after {
+    transition: none;
+  }
+}
+
+/* A label-and-switch pair inside a card, e.g. the Vibrate setting. */
+.row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.row-title {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+}

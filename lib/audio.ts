@@ -129,6 +129,25 @@ export class AlarmAudio {
     }
   }
 
+  /**
+   * A silent alarm keeps the inaudible keep-alive tone playing rather than
+   * swapping to the siren: the page still needs media playing to keep its
+   * timers alive, it just must not make a sound. The waking is done by the
+   * repeating push notifications instead.
+   */
+  async ringSilent(): Promise<void> {
+    const el = this.element;
+    if (!el) return;
+    this.ringing = true;
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: "ALARM — solve the challenge",
+        artist: "Alarm",
+      });
+    }
+    await el.play().catch(() => {});
+  }
+
   async ring(): Promise<void> {
     const el = this.element;
     if (!el || this.ringing) return;
