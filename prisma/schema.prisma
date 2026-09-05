@@ -1,0 +1,252 @@
+// Discipline — planner and alarm as one system.
+//
+// The central decision in this schema is that TimeTask is BOTH a scheduled
+// block and an alarm. There is no separate alarm table and nothing to keep in
+// sync: a block with `enforce` set rings at its start time and will not stop
+// until the challenge is solved. That is what makes the schedule binding
+// rather than decorative, and it is why the app has no "Alarms" screen — the
+// schedule is the alarm list.
+//
+// SQLite rather than Postgres: this is a single-user app running on one
+// machine. One file, trivially backed up, and still a real relational database
+// for the analytics aggregations. Prisma keeps the migrations honest.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model TimeTask {
+  id Int @id @default(autoincrement())
+
+  // Local calendar day as "YYYY-MM-DD". Stored separately from startTime so a
+  // day's schedule is one indexed lookup and never a timezone-sensitive range
+  // query — the whole app is one person in one timezone.
+  date      String
+  startTime DateTime
+  endTime   DateTime
+  // Set when a block runs past midnight; endTime then belongs to this day.
+  nextDate  String?
+  createdAt DateTime @default(now())
+
+  mainCategoryId   Int
+  subCategoryId    Int?
+  linkedTemplateId Int?
+
+  mainCategory   MainCategory @relation(fields: [mainCategoryId], references: [id], onDelete: Cascade)
+  subCategory    SubCategory? @relation(fields: [subCategoryId], references: [id], onDelete: SetNull)
+  linkedTemplate Template?    @relation(fields: [linkedTemplateId], references: [id], onDelete: SetNull)
+
+  isCompleted    Boolean @default(false)
+  priority       String  @default("STANDARD") // STANDARD | MEDIUM | MAX
+  note           String?
+  isInStatistics Boolean @default(true)
+
+  // How the block was planned, for the Plan Source analytics section.
+  planSource String @default("MANUAL") // MANUAL | TEMPLATE | UNDEFINED
+
+  // --- Reminders: the gentle layer, one notification and done. ---
+  isEnableNotification Boolean @default(false)
+  fifteenMinBefore     Boolean @default(false)
+  oneHourBefore        Boolean @default(false)
+  threeHourBefore      Boolean @default(false)
+  oneDayBefore         Boolean @default(false)
+  oneWeekBefore        Boolean @default(false)
+  beforeEnd            Boolean @default(false)
+
+  // --- Enforcement: the alarm layer. This is the integration. ---
+  // A block with enforce=true rings at startTime and keeps ringing until the
+  // challenge is solved, exactly as the standalone alarm did. Waking up is
+  // simply the first enforced block of the day, not a special case.
+  enforce         Boolean @default(false)
+  challengeType   String  @default("math") // math | typing
+  difficulty      String  @default("easy") // easy | medium | hard
+  requiredCorrect Int     @default(3)
+  silent          Boolean @default(false) // vibrate-only, no siren
+  vibrate         Boolean @default(true)
+
+  // --- The discipline record. ---
+  // Produced by the enforcement layer and impossible to collect without it.
+  // ringStartedAt vs dismissedAt is how late you actually started; attempts is
+  // how hard you fought it. These are what the Discipline analytics read.
+  ringStartedAt   DateTime?
+  dismissedAt     DateTime?
+  dismissAttempts Int       @default(0)
+  // Set when a ring hit its cap without ever being solved.
+  gaveUpAt        DateTime?
+
+  @@index([date])
+  @@index([startTime])
+  @@index([mainCategoryId])
+}
+
+model MainCategory {
+  id Int @id @default(autoincrement())
+
+  // Exactly one of these is set: defaultType for the 15 built-ins, customName
+  // for user-made ones. Built-ins carry no name so they stay renameable in the
+  // UI layer without a data migration.
+  customName  String?
+  defaultType String? @unique
+
+  sortOrder Int @default(0)
+
+  subCategories  SubCategory[]
+  timeTasks      TimeTask[]
+  templates      Template[]
+  undefinedTasks UndefinedTask[]
+  goals          Goal[]
+}
+
+model SubCategory {
+  id             Int    @id @default(autoincrement())
+  mainCategoryId Int
+  name           String
+  description    String?
+
+  mainCategory   MainCategory    @relation(fields: [mainCategoryId], references: [id], onDelete: Cascade)
+  timeTasks      TimeTask[]
+  templates      Template[]
+  undefinedTasks UndefinedTask[]
+  goals          Goal[]
+
+  @@index([mainCategoryId])
+}
+
+model Template {
+  id        Int      @id @default(autoincrement())
+  startTime DateTime
+  endTime   DateTime
+
+  mainCategoryId Int
+  subCategoryId  Int?
+
+  mainCategory MainCategory @relation(fields: [mainCategoryId], references: [id], onDelete: Cascade)
+  subCategory  SubCategory? @relation(fields: [subCategoryId], references: [id], onDelete: SetNull)
+
+  priority             String  @default("STANDARD")
+  isEnableNotification Boolean @default(false)
+  isInStatistics       Boolean @default(true)
+  repeatEnabled        Boolean @default(false)
+  note                 String?
+
+  // Enforcement settings are carried on the template too, so a recurring block
+  // generates enforced tasks. The daily wake-up is exactly this: one template,
+  // repeating every weekday, with enforce set.
+  enforce         Boolean @default(false)
+  challengeType   String  @default("math")
+  difficulty      String  @default("easy")
+  requiredCorrect Int     @default(3)
+  silent          Boolean @default(false)
+  vibrate         Boolean @default(true)
+
+  repeatTimes RepeatTime[]
+  timeTasks   TimeTask[]
+}
+
+model RepeatTime {
+  id         Int @id @default(autoincrement())
+  templateId Int
+
+  template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  // WEEK_DAY | WEEK_DAY_IN_MONTH | MONTH_DAY | YEAR_DAY
+  type       String
+  day        String? // MONDAY..SUNDAY
+  dayNumber  Int? // day of month
+  month      String? // JANUARY..DECEMBER
+  weekNumber Int? // nth week in month
+
+  @@index([templateId])
+}
+
+model UndefinedTask {
+  id        Int       @id @default(autoincrement())
+  createdAt DateTime  @default(now())
+  deadline  DateTime?
+
+  mainCategoryId Int
+  subCategoryId  Int?
+
+  mainCategory MainCategory @relation(fields: [mainCategoryId], references: [id], onDelete: Cascade)
+  subCategory  SubCategory? @relation(fields: [subCategoryId], references: [id], onDelete: SetNull)
+
+  priority String  @default("STANDARD")
+  note     String?
+}
+
+model Goal {
+  id    Int    @id @default(autoincrement())
+  title String
+
+  scopeType      String // ALL | MAIN_CATEGORY | SUB_CATEGORY
+  mainCategoryId Int?
+  subCategoryId  Int?
+
+  mainCategory MainCategory? @relation(fields: [mainCategoryId], references: [id], onDelete: SetNull)
+  subCategory  SubCategory?  @relation(fields: [subCategoryId], references: [id], onDelete: SetNull)
+
+  metric      String // DURATION | TASK_COUNT
+  direction   String // AT_LEAST | AT_MOST
+  targetValue BigInt // milliseconds, or a count
+
+  createdAt DateTime @default(now())
+  deadline  DateTime
+
+  history GoalHistory[]
+}
+
+model GoalHistory {
+  id     Int  @id @default(autoincrement())
+  goalId Int?
+
+  goal Goal? @relation(fields: [goalId], references: [id], onDelete: SetNull)
+
+  // Snapshotted so history survives the goal being edited or deleted.
+  goalTitle   String
+  metric      String
+  direction   String
+  targetValue BigInt
+  actualValue BigInt
+
+  periodStart DateTime
+  periodEnd   DateTime
+  isAchieved  Boolean
+  createdAt   DateTime @default(now())
+}
+
+// Push subscriptions, carried over from the alarm app. Keyed by endpoint so a
+// device re-subscribing replaces its row instead of accumulating dead ones.
+model PushSubscription {
+  id        String   @id
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+}
+
+// Single-row settings tables, matching the blueprint.
+model ThemeSettings {
+  id           Int     @id @default(1)
+  language     String  @default("SYSTEM")
+  themeColors  String  @default("DEFAULT") // DEFAULT | LIGHT | DARK
+  colorsType   String  @default("PURPLE") // PINK | PURPLE | RED | BLUE
+  dynamicColor Boolean @default(false)
+}
+
+model TasksSettings {
+  id                     Int     @id @default(1)
+  taskViewStatus         String  @default("EXPANDED") // EXPANDED | COMPACT
+  homeViewMode           String  @default("AGENDA") // AGENDA | TIMELINE
+  taskAnalyticsRange     String  @default("WEEK") // WEEK | MONTH | HALF_YEAR | YEAR | CUSTOM
+  analyticsAnchorDate    String?
+  customRangeStart       String?
+  customRangeEnd         String?
+  calendarButtonBehavior String  @default("PICKER") // PICKER | TODAY
+  secureMode             Boolean @default(false)
+  durationPresets        String  @default("10,15,30,45,60,120")
+}

@@ -6,10 +6,17 @@
     "dev": "next dev -p 3002",
     "build": "next build",
     "start": "next start -p 3002",
-    "keys": "node scripts/generate-vapid.mjs"
+    "keys": "node scripts/generate-vapid.mjs",
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "node prisma/seed.mjs",
+    "db:studio": "prisma studio",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@prisma/adapter-better-sqlite3": "^7.10.0",
+    "@prisma/client": "^7.10.0",
     "next": "^16.3.4",
+    "prisma": "^7.10.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "web-push": "3.6.7"
