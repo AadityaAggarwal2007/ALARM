@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateForRange } from "@/lib/repeat";
+import { materialise } from "@/lib/ai/apply";
 import { dateKey } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
@@ -81,9 +81,9 @@ export async function POST(request: Request) {
     });
   }
 
-  // Materialise the next two weeks immediately, so a new repeating block shows
-  // up on the calendar straight away rather than at the next daily pass.
-  await generateForRange(dateKey(), 14).catch(() => {});
+  // Materialise immediately, so a new repeating block shows up straight away
+  // rather than at the next daily pass.
+  await materialise(template.id).catch(() => {});
 
   return NextResponse.json(template);
 }

@@ -829,3 +829,21 @@ select {
   padding: 11px 2px;
   font-size: 12px;
 }
+
+/* One-time token reveal. */
+.token-reveal {
+  background: var(--surface-2);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.token-reveal code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  color: var(--text);
+}

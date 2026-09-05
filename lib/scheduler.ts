@@ -1,7 +1,7 @@
 import { prisma } from "./db";
 import { pushReady, sendPush } from "./push";
 import { dateKey } from "./time";
-import { generateForRange } from "./repeat";
+import { materialiseAll } from "./ai/apply";
 
 const TICK_MS = 500;
 
@@ -100,8 +100,10 @@ async function tick() {
   if (state.lastGeneratedFor !== today) {
     state.lastGeneratedFor = today;
     state.firedToday.clear();
-    await generateForRange(today, 14).catch((e) =>
-      console.error("[scheduler] template generation failed", e)
+    // One generator for both surfaces: honours tombstones and rule end dates,
+    // so a deleted occurrence stays deleted and a finished term stops.
+    await materialiseAll().catch((e) =>
+      console.error("[scheduler] rule generation failed", e)
     );
   }
 

@@ -22,6 +22,11 @@ export default function SettingsPage() {
   const [pushOk, setPushOk] = useState(false);
   const [note, setNote] = useState("");
   const [testing, setTesting] = useState("");
+  const [tokens, setTokens] = useState<
+    { id: string; name: string; createdAt: string; lastUsedAt: string | null }[]
+  >([]);
+  const [newToken, setNewToken] = useState("");
+  const [tokenName, setTokenName] = useState("");
 
   const load = useCallback(async () => {
     const c = await fetch("/api/categories").then((r) => (r.ok ? r.json() : []));
@@ -32,6 +37,15 @@ export default function SettingsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const loadTokens = useCallback(async () => {
+    const r = await fetch("/api/tokens");
+    if (r.ok) setTokens(await r.json());
+  }, []);
+
+  useEffect(() => {
+    loadTokens();
+  }, [loadTokens]);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
@@ -267,6 +281,81 @@ export default function SettingsPage() {
           <a className="ghost as-btn" href="/api/backup">
             Download backup
           </a>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="sec-title">Agent access</h2>
+        <div className="card">
+          <p className="note">
+            A token lets an AI read and change this schedule from anywhere —
+            Claude, ChatGPT, Cursor, or anything that speaks MCP. It is shown
+            once and stored only as a hash, so copy it now or make a new one.
+          </p>
+
+          <div className="inline-add">
+            <input
+              type="text"
+              value={tokenName}
+              onChange={(e) => setTokenName(e.target.value)}
+              placeholder="What is it for? e.g. Claude"
+            />
+            <button
+              className="ghost small"
+              onClick={async () => {
+                const r = await fetch("/api/tokens", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ name: tokenName || "agent" }),
+                });
+                if (r.ok) {
+                  const d = await r.json();
+                  setNewToken(d.token);
+                  setTokenName("");
+                  loadTokens();
+                }
+              }}
+            >
+              Create
+            </button>
+          </div>
+
+          {newToken && (
+            <div className="token-reveal">
+              <p className="note">Copy this now — it will not be shown again.</p>
+              <code>{newToken}</code>
+              <button
+                className="ghost small"
+                onClick={() => {
+                  navigator.clipboard?.writeText(newToken).catch(() => {});
+                }}
+              >
+                Copy
+              </button>
+            </div>
+          )}
+
+          {tokens.map((t) => (
+            <div key={t.id} className="src-row">
+              <span className="src-label">
+                {t.name}
+                <span className="note">
+                  {t.lastUsedAt
+                    ? ` · last used ${new Date(t.lastUsedAt).toLocaleDateString()}`
+                    : " · never used"}
+                </span>
+              </span>
+              <button
+                className="ghost small"
+                onClick={async () => {
+                  await fetch(`/api/tokens?id=${t.id}`, { method: "DELETE" });
+                  loadTokens();
+                }}
+              >
+                Revoke
+              </button>
+            </div>
+          ))}
         </div>
       </section>
 

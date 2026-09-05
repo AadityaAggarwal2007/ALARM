@@ -47,7 +47,11 @@ model TimeTask {
   isInStatistics Boolean @default(true)
 
   // How the block was planned, for the Plan Source analytics section.
-  planSource String @default("MANUAL") // MANUAL | TEMPLATE | UNDEFINED
+  planSource String @default("MANUAL")
+
+  // Stable handle an agent can address a block by, without reading ids first.
+  // Blocks created by one `schedule` op share a planKey.
+  planKey String? // MANUAL | TEMPLATE | UNDEFINED
 
   // --- Reminders: the gentle layer, one notification and done. ---
   isEnableNotification Boolean @default(false)
@@ -89,6 +93,7 @@ model TimeTask {
   @@index([date])
   @@index([startTime])
   @@index([mainCategoryId])
+  @@index([planKey])
 }
 
 model MainCategory {
@@ -140,6 +145,11 @@ model Template {
   isInStatistics       Boolean @default(true)
   repeatEnabled        Boolean @default(false)
   note                 String?
+  // Stable handle for the rule; re-applying a plan with the same key edits it.
+  key                  String? @unique
+  // Wall-clock "YYYY-MM-DD" the rule stops on. Null runs forever. Rows are
+  // still materialised in a rolling window rather than all at once.
+  until                String?
 
   // Enforcement settings are carried on the template too, so a recurring block
   // generates enforced tasks. The daily wake-up is exactly this: one template,
@@ -154,6 +164,38 @@ model Template {
 
   repeatTimes RepeatTime[]
   timeTasks   TimeTask[]
+  skips       RepeatSkip[]
+}
+
+/**
+ * A single occurrence of a rule that was deleted on purpose.
+ *
+ * Generation only asks "does a row exist for this date and template", so a
+ * deleted occurrence would simply be recreated on the next pass. The tombstone
+ * is what makes "drop just this Friday" stick without touching the rule.
+ */
+model RepeatSkip {
+  id         Int      @id @default(autoincrement())
+  templateId Int
+  date       String
+  createdAt  DateTime @default(now())
+
+  template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, date])
+  @@index([templateId])
+}
+
+/**
+ * Bearer tokens for agents. The human UI authenticates with a cookie, which an
+ * MCP server or a remote model cannot use.
+ */
+model ApiToken {
+  id         String    @id
+  name       String
+  tokenHash  String    @unique
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
 }
 
 model RepeatTime {
