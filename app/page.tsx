@@ -125,6 +125,8 @@ export default function Page() {
 
   const [audioReady, setAudioReady] = useState(false);
   const [pushNote, setPushNote] = useState("");
+  const [pushOk, setPushOk] = useState(false);
+  const [testing, setTesting] = useState("");
 
   const audioRef = useRef<AlarmAudio | null>(null);
   const vibrationRef = useRef<AlarmVibration | null>(null);
@@ -262,7 +264,8 @@ export default function Page() {
       try {
         localStorage.setItem(SUB_ID_KEY, data.id);
       } catch {}
-      setPushNote("Notifications enabled.");
+      setPushOk(true);
+      setPushNote("");
     } else {
       setPushNote("Could not register push.");
     }
@@ -648,8 +651,8 @@ export default function Page() {
           </label>
           <p className="note">
             {draft.silent
-              ? "No sound. Your phone buzzes every 5 seconds via notifications until you solve the challenge. Put the phone on the silent switch so it vibrates instead of chiming — and keep the app on your Home Screen, or iOS will not deliver the push."
-              : "Plays a loud two-tone siren through the phone speaker."}
+              ? "Silent. Your phone buzzes about every 2 seconds until you solve the challenge. Put it on the silent switch so notifications vibrate instead of chiming."
+              : "Loud. Repeating notification chimes, plus a two-tone siren if the app is still open when it fires."}
           </p>
         </div>
 
@@ -743,20 +746,45 @@ export default function Page() {
         Add alarm
       </button>
 
-      {enabled.length > 0 && (
-        <div className="card">
-          <span className="pill">
-            <span className={`dot${audioReady ? "" : " warn"}`} />
-            {audioReady ? "Background audio running" : "Audio not running"}
-          </span>
-          {!audioReady && (
-            <button className="ghost" onClick={unlockAudio}>
-              Restore background audio
-            </button>
-          )}
-          {pushNote && <p className="note">{pushNote}</p>}
-        </div>
-      )}
+      <div className="card">
+        <span className="pill">
+          <span className={`dot${pushOk ? "" : " warn"}`} />
+          {pushOk
+            ? "Notifications on — this is what wakes you"
+            : "Notifications off — nothing will wake you"}
+        </span>
+        <p className="note">
+          {pushOk
+            ? "Alarms are sent from the server, so they reach you with the app closed. They cannot fire while the machine running the server is off or offline."
+            : "Allow notifications, and add this to your Home Screen — iOS refuses push in a plain Safari tab."}
+        </p>
+        <button
+          className="ghost"
+          disabled={!pushOk || testing === "sending"}
+          onClick={async () => {
+            setTesting("sending");
+            const res = await api("POST", "/api/test");
+            setTesting(res.ok ? "Sent — check your phone." : "Test failed.");
+            setTimeout(() => setTesting(""), 6000);
+          }}
+        >
+          {testing === "sending" ? "Buzzing..." : "Test buzz now"}
+        </button>
+        {testing && testing !== "sending" && (
+          <p className="note">{testing}</p>
+        )}
+        {!pushOk && (
+          <button className="ghost" onClick={registerPush}>
+            Enable notifications
+          </button>
+        )}
+        {enabled.length > 0 && !audioReady && (
+          <button className="ghost" onClick={unlockAudio}>
+            Restore background audio
+          </button>
+        )}
+        {pushNote && <p className="note">{pushNote}</p>}
+      </div>
 
       {dismissedAt > 0 && (
         <p className="note">

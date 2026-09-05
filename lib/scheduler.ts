@@ -132,12 +132,10 @@ async function tick() {
       ringing.delete(id);
       continue;
     }
-    // A siren alarm wakes you through the audio layer; it does not need to be
-    // re-notified. Only silent alarms repeat.
-    if (!alarm.silent) {
-      ringing.delete(id);
-      continue;
-    }
+    // Both modes repeat. By the time an alarm is due the app has usually been
+    // closed for hours and iOS has suspended it, so the in-app siren is not
+    // running and the notification burst is the only thing that can reach you.
+    // The mode decides whether waking is loud or silent, not whether it works.
     if (now - session.lastPushAt < RING_INTERVAL_MS) continue;
 
     session.lastPushAt = now;
