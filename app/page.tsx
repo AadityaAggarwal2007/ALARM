@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import TaskEditor, {
   blankValue,
   taskToValue,
@@ -62,6 +62,14 @@ export default function TodayPage() {
     () => Array.from({ length: 15 }, (_, i) => addDays(dateKey(), i - 7)),
     []
   );
+
+  // The strip starts a week in the past, so without this you land on last
+  // Sunday instead of today.
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = stripRef.current?.querySelector<HTMLElement>(".date-chip.active");
+    el?.scrollIntoView({ block: "nearest", inline: "center" });
+  }, [day]);
 
   const totalMs = tasks.reduce(
     (s, t) => s + (new Date(t.endTime).getTime() - new Date(t.startTime).getTime()),
@@ -137,7 +145,7 @@ export default function TodayPage() {
         </a>
       </header>
 
-      <div className="date-strip">
+      <div className="date-strip" ref={stripRef}>
         {strip.map((key) => (
           <button
             key={key}
