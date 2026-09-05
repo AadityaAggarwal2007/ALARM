@@ -33,6 +33,7 @@ export default function RingGuard() {
   const [shake, setShake] = useState(false);
   const [audioReady, setAudioReady] = useState(false);
   const [armed, setArmed] = useState(false);
+  const [enforcedToday, setEnforcedToday] = useState(0);
 
   const audioRef = useRef<AlarmAudio | null>(null);
   const vibrationRef = useRef<AlarmVibration | null>(null);
@@ -158,6 +159,56 @@ export default function RingGuard() {
     return () => clearInterval(id);
   }, [beginRinging]);
 
+  // The armed flag says a gesture happened; it does not say media is still
+  // playing. iOS pauses the session for a call or another app's audio, and a
+  // page with no media playing gets suspended along with its timers. Poll the
+  // element, try to resume silently, and only report failure if that fails.
+  useEffect(() => {
+    if (!armed) return;
+    const id = setInterval(async () => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      if (audio.isPlaying) {
+        setAudioReady(true);
+        return;
+      }
+      setAudioReady(await audio.resume());
+    }, 5000);
+    return () => clearInterval(id);
+  }, [armed]);
+
+  // How many enforced blocks are still ahead today — the indicator only
+  // matters when something is actually relying on it.
+  useEffect(() => {
+    const count = async () => {
+      const now = new Date();
+      const key = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      try {
+        const res = await fetch(`/api/tasks?date=${key}`);
+        if (!res.ok) return;
+        const tasks = (await res.json()) as Task[];
+        setEnforcedToday(
+          tasks.filter(
+            (t) =>
+              t.enforce &&
+              !t.dismissedAt &&
+              !t.gaveUpAt &&
+              new Date(t.startTime).getTime() > Date.now()
+          ).length
+        );
+      } catch {
+        // ignored
+      }
+    };
+    count();
+    const id = setInterval(count, 60_000);
+    window.addEventListener("discipline:changed", count);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("discipline:changed", count);
+    };
+  }, []);
+
   const finish = useCallback(async (solved: Task, tries: number) => {
     vibrationRef.current?.stop();
     speechRef.current?.stop();
@@ -216,7 +267,24 @@ export default function RingGuard() {
     []
   );
 
-  if (!task) return null;
+  if (!task) {
+    // Nothing ringing. Show whether the app is actually able to ring, but only
+    // while a block is still counting on it — otherwise this is just noise.
+    if (enforcedToday === 0) return null;
+
+    const live = armed && audioReady;
+    return (
+      <button
+        className={`armbar${live ? " live" : ""}`}
+        onClick={() => void unlockAudio()}
+      >
+        <span className={`dot${live ? "" : " warn"}`} />
+        {live
+          ? `Armed · ${enforcedToday} enforced block${enforcedToday > 1 ? "s" : ""} ahead`
+          : "Not armed — tap here so alarms can ring"}
+      </button>
+    );
+  }
 
   const meta = categoryMeta(task.mainCategory);
   const title = task.note || task.subCategory?.name || meta.label;

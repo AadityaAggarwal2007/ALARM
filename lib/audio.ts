@@ -188,6 +188,31 @@ export class AlarmAudio {
     URL.revokeObjectURL(this.alarmUrl);
   }
 
+  /**
+   * Whether the keep-alive tone is genuinely playing.
+   *
+   * The armed flag alone is not trustworthy: iOS pauses playback when another
+   * app takes the audio session (a call, a video), and a page whose media has
+   * stopped gets suspended along with the timers every enforced block depends
+   * on. This is what lets the UI notice and say so.
+   */
+  get isPlaying(): boolean {
+    const el = this.element;
+    return Boolean(el && !el.paused && !el.ended);
+  }
+
+  /** Resume after an interruption, without needing a fresh gesture. */
+  async resume(): Promise<boolean> {
+    const el = this.element;
+    if (!el) return false;
+    try {
+      await el.play();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   get isRinging(): boolean {
     return this.ringing;
   }

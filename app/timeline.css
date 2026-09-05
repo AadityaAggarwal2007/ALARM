@@ -73,3 +73,47 @@
   pointer-events: none;
   white-space: nowrap;
 }
+
+/* Armed indicator. Sits above the tab bar because whether the app can ring at
+   all matters more than whatever screen you happen to be on. */
+.armbar {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(64px + env(safe-area-inset-bottom));
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.armbar.live {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--muted);
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.armbar .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.armbar .dot.warn {
+  background: #fff;
+  animation: none;
+}
