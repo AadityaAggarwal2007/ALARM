@@ -61,13 +61,20 @@ server.registerTool(
     inputSchema: {
       from: z.string().optional().describe('Start date "YYYY-MM-DD". Defaults to today.'),
       days: z.number().optional().describe("Window length in days. Default 14, max 120."),
+      include: z
+        .array(z.enum(["categories", "blocks", "rules", "goals", "inbox"]))
+        .optional()
+        .describe(
+          "Only these sections. Ask for what you need — a 60-day block list is large, and editing a repeating rule usually needs only ['rules']."
+        ),
       analytics: z.boolean().optional().describe("Include the discipline and time-use summary."),
     },
   },
-  async ({ from, days, analytics }) => {
+  async ({ from, days, include, analytics }) => {
     const p = new URLSearchParams();
     if (from) p.set("from", from);
     if (days) p.set("days", String(days));
+    if (include?.length) p.set("include", include.join(","));
     if (analytics) p.set("analytics", "1");
     const { body } = await call(`/api/ai/context?${p}`);
     return json(body);
@@ -90,7 +97,7 @@ server.registerTool(
       ops: z
         .array(z.record(z.any()))
         .describe(
-          'Operations. Each has "op": "schedule" | "update" | "delete" | "goal". ' +
+          'Operations. Each has "op": "schedule" | "update" | "delete" | "goal" | "goal_delete" | "inbox" | "rule". ' +
             'Example: [{"op":"schedule","key":"physics","title":"Physics","category":"Study","time":"16:00-18:00","repeat":{"weekdays":["MONDAY","WEDNESDAY"],"until":"2026-12-15"},"enforce":{"mode":"SIREN","difficulty":"medium","streak":3}}]'
         ),
       dryRun: z

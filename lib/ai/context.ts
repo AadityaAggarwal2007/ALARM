@@ -16,29 +16,49 @@ import { categoryMeta } from "../categories";
 export type ContextOptions = {
   from?: string;
   days?: number;
-  includeAnalytics?: boolean;
+  /**
+   * Which sections to return. Most questions need one or two, and a 60-day
+   * block list is ~3300 tokens the model usually has no use for — so the
+   * caller pays only for what it asks for.
+   */
+  include?: string[];
 };
+
+const ALL_SECTIONS = ["categories", "blocks", "rules", "goals", "inbox"] as const;
 
 export async function buildContext(opts: ContextOptions = {}) {
   const from = opts.from || dateKey();
   const days = Math.min(Math.max(opts.days ?? 14, 1), 120);
   const to = addDays(from, days - 1);
 
+  const want = new Set(
+    opts.include?.length ? opts.include.map((s) => s.trim().toLowerCase()) : ALL_SECTIONS
+  );
+  const on = (s: string) => want.has(s);
+
   const [cats, blocks, rules, goals, inbox, subs] = await Promise.all([
-    prisma.mainCategory.findMany({
-      include: { subCategories: { orderBy: { name: "asc" } } },
-      orderBy: { sortOrder: "asc" },
-    }),
-    prisma.timeTask.findMany({
-      where: { date: { gte: from, lte: to } },
-      include: { mainCategory: true, subCategory: true },
-      orderBy: { startTime: "asc" },
-    }),
-    prisma.template.findMany({
-      include: { mainCategory: true, subCategory: true, repeatTimes: true },
-    }),
-    prisma.goal.findMany({ include: { mainCategory: true, subCategory: true } }),
-    prisma.undefinedTask.findMany({ include: { mainCategory: true } }),
+    on("categories") || on("blocks") || on("rules")
+      ? prisma.mainCategory.findMany({
+          include: { subCategories: { orderBy: { name: "asc" } } },
+          orderBy: { sortOrder: "asc" },
+        })
+      : [],
+    on("blocks")
+      ? prisma.timeTask.findMany({
+          where: { date: { gte: from, lte: to } },
+          include: { mainCategory: true, subCategory: true },
+          orderBy: { startTime: "asc" },
+        })
+      : [],
+    on("rules")
+      ? prisma.template.findMany({
+          include: { mainCategory: true, subCategory: true, repeatTimes: true },
+        })
+      : [],
+    on("goals")
+      ? prisma.goal.findMany({ include: { mainCategory: true, subCategory: true } })
+      : [],
+    on("inbox") ? prisma.undefinedTask.findMany({ include: { mainCategory: true } }) : [],
     prisma.pushSubscription.count(),
   ]);
 
@@ -54,13 +74,13 @@ export async function buildContext(opts: ContextOptions = {}) {
     window: { from, to },
 
     // Names an agent can address things by. No ids required anywhere.
-    categories: cats.map((c) => ({
+    categories: !on("categories") ? undefined : cats.map((c) => ({
       name: label(c),
       builtIn: Boolean(c.defaultType),
       subs: c.subCategories.map((s) => s.name),
     })),
 
-    blocks: blocks.map((b) => ({
+    blocks: !on("blocks") ? undefined : blocks.map((b) => ({
       id: b.id,
       key: b.planKey ?? undefined,
       date: b.date,
@@ -92,7 +112,7 @@ export async function buildContext(opts: ContextOptions = {}) {
       ignored: b.gaveUpAt ? true : undefined,
     })),
 
-    rules: rules.map((r) => ({
+    rules: !on("rules") ? undefined : rules.map((r) => ({
       key: r.key ?? undefined,
       title: r.note || label(r.mainCategory),
       category: label(r.mainCategory),
@@ -106,7 +126,7 @@ export async function buildContext(opts: ContextOptions = {}) {
         : undefined,
     })),
 
-    goals: goals.map((g) => ({
+    goals: !on("goals") ? undefined : goals.map((g) => ({
       title: g.title,
       metric: g.metric,
       direction: g.direction,
@@ -120,7 +140,7 @@ export async function buildContext(opts: ContextOptions = {}) {
       until: toDate(g.deadline),
     })),
 
-    inbox: inbox.map((u) => ({
+    inbox: !on("inbox") ? undefined : inbox.map((u) => ({
       id: u.id,
       title: u.note || label(u.mainCategory),
       category: label(u.mainCategory),

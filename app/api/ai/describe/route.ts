@@ -28,7 +28,7 @@ export async function GET() {
 
     endpoints: {
       "GET /api/ai/context":
-        "Everything in one call: today, categories, blocks in a window, rules, goals, inbox. Params: from, days (default 14), analytics=1.",
+        "Everything in one call: today, categories, blocks in a window, rules, goals, inbox. Params: from, days (default 14), analytics=1, include=categories,blocks,rules,goals,inbox to fetch only what you need.",
       "GET /api/ai/query": "Discipline and time-use summary. Param: preset=WEEK|MONTH|HALF_YEAR|YEAR.",
       "POST /api/ai/apply": "All writing. Body: { ops: [...], dryRun?: boolean }.",
       "GET /api/ai/describe": "This document.",
@@ -57,7 +57,7 @@ export async function GET() {
         what: "Change every block matching a selector.",
         fields: {
           where: "Selector, see below.",
-          set: "{ time?, note?, priority?, category?, sub?, enforce?, completed?, countInStats? }. enforce: null turns enforcement off.",
+          set: '{ time?, date?, note?, priority?, category?, sub?, enforce?, remind?, completed?, countInStats? }. set.date moves a block to another day. enforce: null turns enforcement off. remind: true, false, or ["15m","1h","3h","1d","1w","end"].',
           scope: "this | future | all. Required only when the selection includes rule-generated blocks.",
         },
       },
@@ -65,6 +65,21 @@ export async function GET() {
         what: "Remove matching blocks. Deleted occurrences of a rule are tombstoned so they are not regenerated. scope future/all also stops the rule.",
         fields: { where: "Selector.", scope: "this | future | all." },
       },
+      inbox: {
+        what: "Things with no time yet.",
+        fields: {
+          action: "add | schedule | remove",
+          items: 'For add: ["Read chapter 4", "Email tutor"] — one call for a whole list.',
+          title: "For schedule/remove: matches on substring.",
+          time: "For schedule.",
+          date: "For schedule.",
+        },
+      },
+      rule: {
+        what: "Pause, resume or delete a repeating rule by key. Pausing keeps the rule and its history and stops producing new occurrences.",
+        fields: { key: "Rule key.", action: "pause | resume | delete" },
+      },
+      goal_delete: { what: "Remove a goal by title.", fields: { title: "Required." } },
       goal: {
         what: "Create or update a target, matched by title.",
         fields: {

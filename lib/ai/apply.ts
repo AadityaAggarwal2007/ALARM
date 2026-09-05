@@ -112,6 +112,53 @@ function enforceFields(e: EnforceInput | null | undefined) {
   };
 }
 
+/**
+ * Reminders, chosen individually.
+ *
+ * `true` means the ordinary "tell me when it starts"; a list picks exact
+ * lead times. These are the gentle layer — one notification, unlike an
+ * enforced block, which repeats until solved.
+ */
+const REMINDER_FIELDS: Record<string, string> = {
+  "15m": "fifteenMinBefore",
+  "1h": "oneHourBefore",
+  "3h": "threeHourBefore",
+  "1d": "oneDayBefore",
+  "1w": "oneWeekBefore",
+  end: "beforeEnd",
+};
+
+function reminderFields(value: unknown) {
+  if (value === false || value === null) {
+    return { isEnableNotification: false };
+  }
+  const base: Record<string, unknown> = {
+    isEnableNotification: true,
+    fifteenMinBefore: false,
+    oneHourBefore: false,
+    threeHourBefore: false,
+    oneDayBefore: false,
+    oneWeekBefore: false,
+    beforeEnd: false,
+  };
+  if (value === true) return base;
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `remind must be true, false, or a list from ${Object.keys(REMINDER_FIELDS).join(", ")}.`
+    );
+  }
+  for (const item of value) {
+    const field = REMINDER_FIELDS[String(item).toLowerCase()];
+    if (!field) {
+      throw new Error(
+        `unknown reminder "${item}". Valid: ${Object.keys(REMINDER_FIELDS).join(", ")}.`
+      );
+    }
+    base[field] = true;
+  }
+  return base;
+}
+
 // --------------------------------------------------------------- selector
 
 export type Where = {
@@ -373,7 +420,7 @@ export async function applyPlan(
             until,
             repeatEnabled: true,
             isInStatistics: op.countInStats !== false,
-            isEnableNotification: op.remind === true,
+            ...reminderFields(op.remind ?? false),
             ...enforceFields(op.enforce as EnforceInput ?? undefined),
           };
 
@@ -451,7 +498,7 @@ export async function applyPlan(
               planKey: key,
               planSource: "MANUAL",
               isInStatistics: op.countInStats !== false,
-              isEnableNotification: op.remind === true,
+              ...reminderFields(op.remind ?? false),
               ...enforce,
             },
           });
@@ -563,22 +610,38 @@ export async function applyPlan(
         }
         if (typeof set.completed === "boolean") patch.isCompleted = set.completed;
         if (typeof set.countInStats === "boolean") patch.isInStatistics = set.countInStats;
+        if (set.remind !== undefined) Object.assign(patch, reminderFields(set.remind));
         if (set.enforce !== undefined) {
           Object.assign(patch, enforceFields(set.enforce as EnforceInput));
         }
-        if (typeof set.time === "string") {
-          const s2 = parseSpan(set.time);
+        // Moving a block to another day and retiming it are the same write:
+        // the timestamps are anchored to the date, so changing one without the
+        // other would leave the row describing two different days.
+        const newDate = set.date ? assertDate(set.date, "set.date") : null;
+        if (typeof set.time === "string" || newDate) {
+          const s2 = typeof set.time === "string" ? parseSpan(set.time) : null;
           for (const r of targets) {
             if (dryRun) continue;
-            const st = at(r.date, s2.start);
-            let en = at(r.date, s2.end);
-            if (en.getTime() <= st.getTime()) en = new Date(en.getTime() + 86400000);
+            const date = newDate ?? r.date;
+            const start = s2 ? s2.start : toTime(r.startTime);
+            const end = s2 ? s2.end : toTime(r.endTime);
+            const st = at(date, start);
+            let en = at(date, end);
+            let nextDate: string | null = null;
+            if (en.getTime() <= st.getTime()) {
+              en = new Date(en.getTime() + 86400000);
+              nextDate = addDays(date, 1);
+            }
             await prisma.timeTask.update({
               where: { id: r.id },
-              data: { startTime: st, endTime: en },
+              data: { date, nextDate, startTime: st, endTime: en },
             });
           }
-          changes.push(`retimed to ${s2.start}-${s2.end}`);
+          changes.push(
+            newDate
+              ? `moved to ${newDate}${s2 ? ` ${s2.start}-${s2.end}` : ""}`
+              : `retimed to ${s2!.start}-${s2!.end}`
+          );
         }
         if (set.category || set.sub) {
           const r = await resolve(set.category as string, set.sub as string);
@@ -761,8 +824,149 @@ export async function applyPlan(
         continue;
       }
 
+      // -------------------------------------------------------- inbox
+      // Things with no time yet. Kept as its own op rather than a flavour of
+      // schedule, because "capture this, I'll place it later" is a different
+      // intent from "put this at four o'clock".
+      if (kind === "inbox") {
+        const action = String(op.action || "add").toLowerCase();
+
+        if (action === "add") {
+          const items: string[] = Array.isArray(op.items)
+            ? (op.items as string[])
+            : [String(op.title || "")];
+          const { mainCategoryId, subCategoryId } = await resolve(
+            op.category as string,
+            op.sub as string
+          );
+          for (const title of items.filter(Boolean)) {
+            if (dryRun) {
+              created += 1;
+              continue;
+            }
+            await prisma.undefinedTask.create({
+              data: {
+                mainCategoryId,
+                subCategoryId,
+                note: title.slice(0, 120),
+                priority: "STANDARD",
+                deadline: op.by ? at(assertDate(op.by, "by"), "23:59") : null,
+              },
+            });
+            created += 1;
+          }
+          changes.push(`${dryRun ? "would add" : "added"} ${items.length} inbox item(s)`);
+          continue;
+        }
+
+        if (action === "schedule") {
+          const span = parseSpan(String(op.time || ""));
+          const date = assertDate(op.date ?? dateKey(), "date");
+          const items = await prisma.undefinedTask.findMany({
+            where: op.title
+              ? { note: { contains: String(op.title) } }
+              : op.ids
+                ? { id: { in: (op.ids as number[]).map(Number) } }
+                : {},
+            take: op.title || op.ids ? undefined : 1,
+          });
+          for (const item of items) {
+            if (dryRun) {
+              created += 1;
+              continue;
+            }
+            const st = at(date, span.start);
+            let en = at(date, span.end);
+            if (en.getTime() <= st.getTime()) en = new Date(en.getTime() + 86400000);
+            await prisma.timeTask.create({
+              data: {
+                date,
+                startTime: st,
+                endTime: en,
+                mainCategoryId: item.mainCategoryId,
+                subCategoryId: item.subCategoryId,
+                priority: item.priority,
+                note: item.note,
+                planSource: "UNDEFINED",
+                ...enforceFields(op.enforce as EnforceInput),
+              },
+            });
+            await prisma.undefinedTask.delete({ where: { id: item.id } });
+            created += 1;
+          }
+          changes.push(`${dryRun ? "would schedule" : "scheduled"} ${items.length} inbox item(s) on ${date}`);
+          continue;
+        }
+
+        if (action === "remove") {
+          const where = op.title
+            ? { note: { contains: String(op.title) } }
+            : { id: { in: ((op.ids as number[]) || []).map(Number) } };
+          if (!dryRun) {
+            const r = await prisma.undefinedTask.deleteMany({ where });
+            deleted += r.count;
+          }
+          changes.push(`${dryRun ? "would remove" : "removed"} inbox item(s)`);
+          continue;
+        }
+
+        throw new Error(`inbox.action must be add, schedule or remove.`);
+      }
+
+      // --------------------------------------------------------- rule
+      // Pausing is not deleting: a paused rule keeps its settings and its
+      // history, and stops producing new occurrences until resumed.
+      if (kind === "rule") {
+        const key = String(op.key || "");
+        if (!key) throw new Error("rule.key is required.");
+        const rule = await prisma.template.findUnique({ where: { key } });
+        if (!rule) throw new Error(`no rule with key "${key}".`);
+
+        const action = String(op.action || "").toLowerCase();
+        if (!["pause", "resume", "delete"].includes(action)) {
+          throw new Error("rule.action must be pause, resume or delete.");
+        }
+
+        if (!dryRun) {
+          if (action === "delete") {
+            const r = await prisma.timeTask.deleteMany({
+              where: { linkedTemplateId: rule.id, date: { gte: dateKey() }, dismissedAt: null },
+            });
+            deleted += r.count;
+            await prisma.template.delete({ where: { id: rule.id } });
+          } else {
+            await prisma.template.update({
+              where: { id: rule.id },
+              data: { repeatEnabled: action === "resume" },
+            });
+            if (action === "pause") {
+              const r = await prisma.timeTask.deleteMany({
+                where: { linkedTemplateId: rule.id, date: { gte: dateKey() }, dismissedAt: null },
+              });
+              deleted += r.count;
+            } else {
+              created += await materialise(rule.id);
+            }
+          }
+        }
+        updated += 1;
+        changes.push(`${dryRun ? "would " : ""}${action}d rule "${rule.note || key}"`);
+        continue;
+      }
+
+      // --------------------------------------------------------- goal
+      if (kind === "goal_delete") {
+        const title = String(op.title || "");
+        if (!dryRun) {
+          const r = await prisma.goal.deleteMany({ where: { title } });
+          deleted += r.count;
+        }
+        changes.push(`${dryRun ? "would delete" : "deleted"} goal "${title}"`);
+        continue;
+      }
+
       throw new Error(
-        `unknown op "${op.op}". Valid: schedule, update, delete, goal.`
+        `unknown op "${op.op}". Valid: schedule, update, delete, goal, goal_delete, inbox, rule.`
       );
     } catch (error) {
       return {

@@ -14,6 +14,7 @@ export async function GET(request: Request) {
   const context = await buildContext({
     from: p.get("from") || undefined,
     days: p.get("days") ? Number(p.get("days")) : undefined,
+    include: p.get("include")?.split(",").filter(Boolean),
   });
 
   if (p.get("analytics") === "1" || p.get("analytics") === "true") {
