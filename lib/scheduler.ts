@@ -1,7 +1,9 @@
 import { listAlarms, listSubs, deleteSub, type ServerAlarm } from "./store";
 import { pushReady, sendPush } from "./push";
 
-const TICK_MS = 1_000;
+// Half the buzz interval, so a 1s cadence is actually hit every second rather
+// than drifting to 2s whenever a tick lands a few ms early.
+const TICK_MS = 500;
 
 /**
  * A silent alarm has no siren, so the only thing that can wake you is the
@@ -9,11 +11,12 @@ const TICK_MS = 1_000;
  * sleep through — so a silent alarm re-pushes on every tick until it is
  * dismissed, or until it gives up.
  */
-const RING_INTERVAL_MS = Number(process.env.ALARM_BUZZ_INTERVAL_MS || 2_000);
+const RING_INTERVAL_MS = Number(process.env.ALARM_BUZZ_INTERVAL_MS || 1_000);
 /**
- * Capped at 3 minutes. At a 2s cadence that is ~90 notifications to Apple's
- * push service for one alarm; going faster or longer risks being throttled,
- * which would cost you the alarm entirely.
+ * Capped at 3 minutes. At a 1s cadence that is up to ~180 notifications to
+ * Apple's push service for a single alarm, which is the level where APNs may
+ * start throttling. The cap is what keeps one unanswered alarm from spending
+ * the whole morning hammering it — raise ALARM_BUZZ_INTERVAL_MS to back off.
  */
 const MAX_RING_MS = 3 * 60 * 1000;
 

@@ -651,7 +651,7 @@ export default function Page() {
           </label>
           <p className="note">
             {draft.silent
-              ? "Silent. Your phone buzzes about every 2 seconds until you solve the challenge. Put it on the silent switch so notifications vibrate instead of chiming."
+              ? "Silent. Your phone buzzes about once a second until you solve the challenge. Put it on the silent switch so notifications vibrate instead of chiming."
               : "Loud. Repeating notification chimes, plus a two-tone siren if the app is still open when it fires."}
           </p>
         </div>
