@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { randomUUID } from "crypto";
-import { saveSub, deleteSub } from "@/lib/store";
+import { randomUUID, createHash } from "crypto";
+import { prisma } from "@/lib/db";
 import { pushReady } from "@/lib/push";
 
 export const dynamic = "force-dynamic";
@@ -13,15 +13,10 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON." }, { status: 400 });
-  }
-
+  const body = await request.json().catch(() => ({}));
   const sub = body.subscription as Record<string, unknown> | undefined;
   const keys = sub?.keys as Record<string, unknown> | undefined;
+
   if (
     !sub ||
     typeof sub.endpoint !== "string" ||
@@ -35,12 +30,19 @@ export async function POST(request: Request) {
     );
   }
 
-  const id = typeof body.id === "string" && body.id ? body.id : randomUUID();
+  // Keyed by endpoint so a device that re-subscribes replaces its own row
+  // instead of leaving a dead one behind to be pushed at forever.
+  const endpoint = sub.endpoint;
+  const id =
+    typeof body.id === "string" && body.id
+      ? body.id
+      : createHash("sha256").update(endpoint).digest("hex").slice(0, 32) ||
+        randomUUID();
 
-  await saveSub({
-    id,
-    subscription: sub as unknown as Parameters<typeof saveSub>[0]["subscription"],
-    createdAt: Date.now(),
+  await prisma.pushSubscription.upsert({
+    where: { endpoint },
+    update: { p256dh: keys.p256dh, auth: keys.auth },
+    create: { id, endpoint, p256dh: keys.p256dh, auth: keys.auth },
   });
 
   return NextResponse.json({ id });
@@ -51,6 +53,6 @@ export async function DELETE(request: Request) {
   if (!id) {
     return NextResponse.json({ error: "id is required." }, { status: 400 });
   }
-  await deleteSub(id);
+  await prisma.pushSubscription.delete({ where: { id } }).catch(() => {});
   return NextResponse.json({ ok: true });
 }

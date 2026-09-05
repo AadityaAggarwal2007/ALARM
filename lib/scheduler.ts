@@ -1,170 +1,204 @@
-import { listAlarms, listSubs, deleteSub, type ServerAlarm } from "./store";
+import { prisma } from "./db";
 import { pushReady, sendPush } from "./push";
+import { dateKey } from "./time";
+import { generateForRange } from "./repeat";
 
-// Half the buzz interval, so a 1s cadence is actually hit every second rather
-// than drifting to 2s whenever a tick lands a few ms early.
 const TICK_MS = 500;
 
 /**
- * A silent alarm has no siren, so the only thing that can wake you is the
- * phone buzzing for an incoming notification. One notification is a chime you
- * sleep through — so a silent alarm re-pushes on every tick until it is
- * dismissed, or until it gives up.
+ * An enforced block keeps buzzing until its challenge is solved. One
+ * notification is a chime you sleep through, so the burst repeats — see
+ * app/page.tsx for the client half.
  */
 const RING_INTERVAL_MS = Number(process.env.ALARM_BUZZ_INTERVAL_MS || 1_000);
 /**
- * Capped at 3 minutes. At a 1s cadence that is up to ~180 notifications to
- * Apple's push service for a single alarm, which is the level where APNs may
- * start throttling. The cap is what keeps one unanswered alarm from spending
- * the whole morning hammering it — raise ALARM_BUZZ_INTERVAL_MS to back off.
+ * Capped at 3 minutes. At a 1s cadence that is ~180 notifications to Apple for
+ * a single block, roughly where APNs starts throttling. The cap stops one
+ * ignored block from spending the morning hammering it.
  */
 const MAX_RING_MS = 3 * 60 * 1000;
 
+/** Reminder triggers, in minutes before start. `beforeEnd` is handled apart. */
+const REMINDERS: { field: string; minutes: number; label: string }[] = [
+  { field: "fifteenMinBefore", minutes: 15, label: "in 15 minutes" },
+  { field: "oneHourBefore", minutes: 60, label: "in 1 hour" },
+  { field: "threeHourBefore", minutes: 180, label: "in 3 hours" },
+  { field: "oneDayBefore", minutes: 1440, label: "tomorrow" },
+  { field: "oneWeekBefore", minutes: 10080, label: "in a week" },
+];
+
 type RingSession = {
-  alarmId: string;
+  taskId: number;
   startedAt: number;
   lastPushAt: number;
   pushes: number;
 };
 
 /**
- * Next.js can load this module more than once — instrumentation.ts and the
- * route handlers do not always share a module instance. Ring state has to be
- * the same object for both, or /api/dismiss would clear a map the scheduler
- * never reads and the phone would keep buzzing with no way to stop it.
+ * Next.js does not guarantee that instrumentation.ts and the route handlers
+ * share a module instance, so ring state lives on globalThis. Without it
+ * /api/ring/dismiss would clear a map the scheduler never reads, and a ringing
+ * block could not be stopped.
  */
 type SchedulerState = {
   timer: NodeJS.Timeout | null;
-  sentToday: Map<string, boolean>;
-  ringing: Map<string, RingSession>;
+  ringing: Map<number, RingSession>;
+  firedToday: Set<string>;
+  lastGeneratedFor: string | null;
 };
 
-const globalState = globalThis as typeof globalThis & {
-  __alarmScheduler?: SchedulerState;
-};
+const g = globalThis as typeof globalThis & { __discipline?: SchedulerState };
 
-const state: SchedulerState = (globalState.__alarmScheduler ??= {
+const state: SchedulerState = (g.__discipline ??= {
   timer: null,
-  sentToday: new Map(),
   ringing: new Map(),
+  firedToday: new Set(),
+  lastGeneratedFor: null,
 });
 
-const { sentToday, ringing } = state;
-
-/**
- * Today's occurrence of an alarm time, past or future.
- *
- * Deliberately NOT "the next occurrence": rolling a passed time forward to
- * tomorrow makes it permanently in the future, so a due-check against it can
- * never pass and the alarm never fires.
- */
-function todayOccurrence(hhmm: string): number {
-  const [hours, minutes] = hhmm.split(":").map(Number);
-  const target = new Date();
-  target.setHours(hours, minutes, 0, 0);
-  return target.getTime();
+export function activeRings(): number[] {
+  return [...state.ringing.keys()];
 }
 
-function todayKey(alarmId: string): string {
-  const d = new Date();
-  return `${alarmId}:${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+export function stopRinging(taskId: number): boolean {
+  return state.ringing.delete(taskId);
 }
 
-/** Called by /api/dismiss when the challenge is solved, to stop the buzzing. */
-export function stopRinging(alarmId: string): boolean {
-  return ringing.delete(alarmId);
-}
-
-export function activeRings(): string[] {
-  return [...ringing.keys()];
-}
-
-async function pushToAll(alarm: ServerAlarm, repeat: number) {
-  const subs = await listSubs();
-  console.log(
-    `[scheduler] push "${alarm.label}" silent=${alarm.silent} repeat=${repeat} to ${subs.length} device(s)`
-  );
+async function pushAll(payload: Record<string, unknown>) {
+  const subs = await prisma.pushSubscription.findMany();
   for (const sub of subs) {
-    const alive = await sendPush(sub.subscription, {
-      title: alarm.label || "Alarm",
-      body: "Open the app and solve the challenge to stop it.",
-      alarmId: alarm.id,
-      silent: alarm.silent,
-      repeat,
-    });
-    if (!alive) await deleteSub(sub.id);
+    const alive = await sendPush(
+      {
+        endpoint: sub.endpoint,
+        keys: { p256dh: sub.p256dh, auth: sub.auth },
+      },
+      payload
+    );
+    if (!alive) {
+      await prisma.pushSubscription.delete({ where: { id: sub.id } }).catch(() => {});
+    }
   }
+}
+
+function taskTitle(task: {
+  note: string | null;
+  mainCategory: { defaultType: string | null; customName: string | null };
+}): string {
+  if (task.note) return task.note;
+  return task.mainCategory.customName || task.mainCategory.defaultType || "Block";
 }
 
 async function tick() {
   if (!pushReady()) return;
-
   const now = Date.now();
-  const alarms = await listAlarms();
-  const byId = new Map(alarms.map((a) => [a.id, a]));
+  const today = dateKey();
 
-  // 1. Start sessions for alarms that just came due.
-  for (const alarm of alarms) {
-    if (!alarm.enabled) continue;
-    const key = todayKey(alarm.id);
-    if (sentToday.get(key)) continue;
+  // Materialise repeating templates for the days ahead, once per day.
+  if (state.lastGeneratedFor !== today) {
+    state.lastGeneratedFor = today;
+    state.firedToday.clear();
+    await generateForRange(today, 14).catch((e) =>
+      console.error("[scheduler] template generation failed", e)
+    );
+  }
 
-    const fireAt = todayOccurrence(alarm.time);
-    const late = now - fireAt;
-    // Due when the time has passed, but not so long ago that the moment is gone.
-    if (late < 0 || late > 2 * 60 * 1000) continue;
+  const tasks = await prisma.timeTask.findMany({
+    where: { date: { in: [today] } },
+    include: { mainCategory: true },
+  });
 
-    sentToday.set(key, true);
-    ringing.set(alarm.id, {
-      alarmId: alarm.id,
+  for (const task of tasks) {
+    const start = task.startTime.getTime();
+    const end = task.endTime.getTime();
+
+    // --- Reminder triggers: fire once, no repeat. ---
+    if (task.isEnableNotification) {
+      for (const r of REMINDERS) {
+        if (!(task as unknown as Record<string, boolean>)[r.field]) continue;
+        const at = start - r.minutes * 60_000;
+        const key = `${task.id}:${r.field}`;
+        if (state.firedToday.has(key)) continue;
+        if (now < at || now - at > 60_000) continue;
+        state.firedToday.add(key);
+        await pushAll({
+          title: taskTitle(task),
+          body: `Starts ${r.label}.`,
+          taskId: task.id,
+        });
+      }
+
+      const endKey = `${task.id}:beforeEnd`;
+      if (task.beforeEnd && !state.firedToday.has(endKey)) {
+        const at = end - 60_000;
+        if (now >= at && now - at <= 60_000) {
+          state.firedToday.add(endKey);
+          await pushAll({
+            title: taskTitle(task),
+            body: "Ends in a minute.",
+            taskId: task.id,
+          });
+        }
+      }
+    }
+
+    // --- Enforcement: ring at start, keep ringing until solved. ---
+    if (!task.enforce || task.dismissedAt || task.gaveUpAt) continue;
+    const startKey = `${task.id}:enforce`;
+    if (state.firedToday.has(startKey) || state.ringing.has(task.id)) continue;
+    if (now < start || now - start > 2 * 60 * 1000) continue;
+
+    state.firedToday.add(startKey);
+    state.ringing.set(task.id, {
+      taskId: task.id,
       startedAt: now,
       lastPushAt: now,
       pushes: 1,
     });
-    await pushToAll(alarm, 1);
+    await prisma.timeTask
+      .update({ where: { id: task.id }, data: { ringStartedAt: new Date() } })
+      .catch(() => {});
+    await pushAll({
+      title: taskTitle(task),
+      body: "Open the app and solve the challenge to stop it.",
+      taskId: task.id,
+      silent: task.silent,
+      repeat: 1,
+    });
   }
 
-  // 2. Keep buzzing anything still ringing.
-  for (const [id, session] of ringing) {
-    const alarm = byId.get(id);
-    if (!alarm || !alarm.enabled) {
-      ringing.delete(id);
-      continue;
-    }
+  // --- Keep buzzing whatever is still ringing. ---
+  for (const [id, session] of state.ringing) {
     if (now - session.startedAt > MAX_RING_MS) {
-      ringing.delete(id);
+      state.ringing.delete(id);
+      await prisma.timeTask
+        .update({ where: { id }, data: { gaveUpAt: new Date() } })
+        .catch(() => {});
       continue;
     }
-    // Both modes repeat. By the time an alarm is due the app has usually been
-    // closed for hours and iOS has suspended it, so the in-app siren is not
-    // running and the notification burst is the only thing that can reach you.
-    // The mode decides whether waking is loud or silent, not whether it works.
     if (now - session.lastPushAt < RING_INTERVAL_MS) continue;
+
+    const task = await prisma.timeTask
+      .findUnique({ where: { id }, include: { mainCategory: true } })
+      .catch(() => null);
+    if (!task || task.dismissedAt || !task.enforce) {
+      state.ringing.delete(id);
+      continue;
+    }
 
     session.lastPushAt = now;
     session.pushes += 1;
-    await pushToAll(alarm, session.pushes);
+    await pushAll({
+      title: taskTitle(task),
+      body: "Open the app and solve the challenge to stop it.",
+      taskId: id,
+      silent: task.silent,
+      repeat: session.pushes,
+    });
   }
 }
 
 export function startScheduler() {
   if (state.timer) return;
-
-  const msToMidnight = () => {
-    const now = new Date();
-    const midnight = new Date(now);
-    midnight.setHours(24, 0, 0, 0);
-    return midnight.getTime() - now.getTime();
-  };
-  const scheduleCleanup = () => {
-    const t = setTimeout(() => {
-      sentToday.clear();
-      scheduleCleanup();
-    }, msToMidnight());
-    t.unref?.();
-  };
-  scheduleCleanup();
-
   state.timer = setInterval(() => {
     tick().catch((error) => console.error("[scheduler] tick failed", error));
   }, TICK_MS);
