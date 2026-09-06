@@ -469,6 +469,21 @@ export async function applyPlan(
         }
 
         // --- One-off blocks. The default, deliberately. ---
+        //
+        // A key promises idempotency — describe_api states that re-sending a
+        // plan edits what the key made rather than duplicating it — and that
+        // was only ever true for rules. A model that retried a one-off block
+        // (a tool result it misread, a second pass over its own plan) silently
+        // produced two. Re-applying a key now replaces what it made.
+        if (key && !dryRun) {
+          const removed = await prisma.timeTask.deleteMany({
+            where: { planKey: key, linkedTemplateId: null, dismissedAt: null },
+          });
+          if (removed.count) {
+            changes.push(`replaced ${removed.count} earlier block(s) under key "${key}"`);
+          }
+        }
+
         const dates: string[] = Array.isArray(op.dates)
           ? (op.dates as string[]).map((d) => assertDate(d, "dates[]"))
           : [assertDate(op.date ?? dateKey(), "date")];
@@ -556,16 +571,16 @@ export async function applyPlan(
           };
         }
 
+        // Scope narrows the time range; it must never widen the selection.
+        //
+        // "all" previously refetched every block of the rule and discarded the
+        // selector, so "change the Fridays, all occurrences" silently rewrote
+        // Mondays and Wednesdays too. Every model tested sent exactly that
+        // shape — weekdays FRIDAY with scope all — and meant "all the Fridays".
+        // Their reading is the correct one.
+        const todayKey = dateKey();
         const targets =
-          scope === "all"
-            ? await prisma.timeTask.findMany({
-                where: {
-                  linkedTemplateId: {
-                    in: [...new Set(fromRule.map((r) => r.linkedTemplateId!))],
-                  },
-                },
-              })
-            : rows;
+          scope === "future" ? rows.filter((r) => r.date >= todayKey) : rows;
 
         if (kind === "delete") {
           if (!dryRun) {
