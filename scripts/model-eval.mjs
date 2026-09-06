@@ -27,6 +27,20 @@ if (!MODEL || !TOKEN) {
 /** Every test artifact carries this, so cleanup never touches real data. */
 const NS = "eval";
 
+/**
+ * EVAL SAFETY — read before pointing this at anything you care about.
+ *
+ * Namespacing the artifacts is not enough. A model is free to send a selector
+ * with no key — "all Friday blocks" — and the API will act on it. During one
+ * run that split the user's real wake-up rule, moving its Fridays onto a
+ * separate rule with a different alarm mode, and flipped two of their own
+ * blocks from SIREN to VIBRATE. Everything was restored by hand afterwards.
+ *
+ * Point DISCIPLINE_URL at a scratch instance. If that is not possible, take a
+ * backup first and diff the rules when the run finishes.
+ */
+
+
 // ----------------------------------------------------------------- the tools
 
 const TOOLS = [
