@@ -484,6 +484,23 @@ export async function applyPlan(
           continue;
         }
 
+        // A model that never looked up the current date schedules from its own
+        // training cutoff — five of seven tested placed "this Saturday" in 2023
+        // or 2024. Those blocks are silently useless, so a far-past date is
+        // refused and the error carries today's date, which fixes it in one
+        // round trip instead of leaving a dead block behind. Deliberate
+        // backfilling still works with allowPast.
+        const guardPast = (d: string) => {
+          if (op.allowPast === true) return;
+          const cutoff = addDays(dateKey(), -7);
+          if (d < cutoff) {
+            throw new Error(
+              `date "${d}" is in the past. Today is ${dateKey()}. ` +
+                `Call get_schedule if you are unsure of the current date, or pass allowPast: true to backfill deliberately.`
+            );
+          }
+        };
+
         // --- One-off blocks. The default, deliberately. ---
         //
         // A key promises idempotency — describe_api states that re-sending a
@@ -503,6 +520,7 @@ export async function applyPlan(
         const dates: string[] = Array.isArray(op.dates)
           ? (op.dates as string[]).map((d) => assertDate(d, "dates[]"))
           : [assertDate(op.date ?? dateKey(), "date")];
+        dates.forEach(guardPast);
 
         for (const date of dates) {
           const start = at(date, span.start);
