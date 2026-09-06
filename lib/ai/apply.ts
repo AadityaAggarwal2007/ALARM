@@ -360,8 +360,24 @@ export async function applyPlan(
     return { mainCategoryId: entry.id, subCategoryId: subId };
   };
 
+  const KINDS = ["schedule", "update", "delete", "goal", "goal_delete", "inbox", "rule"];
+
+  /**
+   * Both Claude models reached for `{ "schedule": { ... } }` — the op name as a
+   * key wrapping its own arguments — rather than `{ "op": "schedule", ... }`.
+   * It is a perfectly reasonable reading, and rejecting it only bought a wasted
+   * round trip before they retried in the documented shape. Accepting it costs
+   * nothing and removes a whole class of retry.
+   */
+  const normalise = (raw: Op): Op => {
+    if (raw.op) return raw;
+    const key = KINDS.find((k) => raw[k] && typeof raw[k] === "object");
+    if (!key) return raw;
+    return { ...(raw[key] as Record<string, unknown>), op: key };
+  };
+
   for (let i = 0; i < ops.length; i++) {
-    const op = ops[i];
+    const op = normalise(ops[i]);
     const kind = String(op.op || "").toLowerCase();
 
     try {
@@ -789,20 +805,26 @@ export async function applyPlan(
       if (kind === "goal") {
         const title = String(op.title || "").trim();
         if (!title) throw new Error("goal.title is required.");
+        const metricRaw = String(op.metric || "DURATION").toUpperCase();
         const metric =
-          String(op.metric || "DURATION").toUpperCase() === "TASK_COUNT"
+          metricRaw === "TASK_COUNT" || metricRaw === "COUNT" || metricRaw === "TASKS"
             ? "TASK_COUNT"
             : "DURATION";
-        const direction =
-          String(op.direction || "AT_LEAST").toUpperCase() === "AT_MOST"
-            ? "AT_MOST"
-            : "AT_LEAST";
+        // "up"/"down" and "min"/"max" are the shapes models actually reach for.
+        const dirRaw = String(op.direction || "AT_LEAST").toUpperCase();
+        const direction = ["AT_MOST", "DOWN", "MAX", "UNDER"].includes(dirRaw)
+          ? "AT_MOST"
+          : "AT_LEAST";
         const target =
           metric === "DURATION"
             ? parseDuration(op.target as string)
             : Number(op.target || 0);
 
-        const scopeObj = (op.scope || {}) as { category?: string; sub?: string };
+        const scopeObj = (
+          typeof op.scope === "string"
+            ? { category: op.scope }
+            : op.scope || {}
+        ) as { category?: string; sub?: string };
         let mainCategoryId: number | null = null;
         let subCategoryId: number | null = null;
         let scopeType = "ALL";
